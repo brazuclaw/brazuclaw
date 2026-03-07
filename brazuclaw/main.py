@@ -9,7 +9,7 @@ import requests
 BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
 LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO, EXECUTANDO = 1000, 256 * 1024, 10, True
-MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "codex-mini-latest", "codex-mini-latest"
+MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "", ""
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
@@ -124,7 +124,7 @@ def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, de
     if p.returncode and not saida:
         for marca in ("usage limit", "limit", "upgrade", "credits"):
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
-        raise RuntimeError("Falha ao executar o Codex CLI.")
+        raise RuntimeError(erros.split("\n")[-1] if erros else "Falha ao executar o Codex CLI.")
     return saida or "Sem resposta do Codex CLI."
 
 def codex_ok() -> bool:
