@@ -9,7 +9,7 @@ import requests
 BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
 LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO, EXECUTANDO = 1000, 256 * 1024, 10, True
-MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "o4-mini", "gpt-5.4-low"
+MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "codex-mini-latest", "codex-mini-latest"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
@@ -293,9 +293,11 @@ def daemonizar() -> None:
 def rodar_bot() -> int:
     """Executa long polling do Telegram e o scheduler local."""
     preparar_banco(); token = config().get("BRAZUCLAW_TOKEN")
-    if not token or not codex_ok(): print("Configuracao incompleta ou Codex sem autenticacao. Executando wizard."); return cli_setup()
+    if not token:
+        logar("erro_token_ausente"); return 1
     try: validar_token(token)
-    except Exception: print("Token do Telegram ausente ou invalido. Executando wizard."); return cli_setup()
+    except Exception as erro:
+        logar(f"erro_token_invalido={erro}"); return 1
     signal.signal(signal.SIGINT, encerrar); signal.signal(signal.SIGTERM, encerrar)
     banco("UPDATE crons SET pid_atual = 0, abortar = 0")
     for c in banco("SELECT id, schedule, ativo FROM crons", varios=True): banco("UPDATE crons SET proximo_em = ? WHERE id = ?", (cron_proximo(str(c["schedule"]), int(time.time()) - 60) if int(c["ativo"]) else 0, c["id"]))
@@ -362,8 +364,16 @@ def cli_setup() -> int:
     print(f"Resumo final:\n- SO: {nome_so}\n- Node.js: ok\n- Codex CLI: ok\n- Token Telegram: ok\n- Personalidade: {ARQ['alma']}\n- Dados locais: {BASE}\n- Iniciar bot: brazuclaw\n- Ver logs: brazuclaw logs -f")
     return 0
 
+def setup_necessario() -> bool:
+    """Verifica se o setup precisa rodar."""
+    token = config().get("BRAZUCLAW_TOKEN")
+    return not token or not PADRAO_TOKEN.match(token)
+
 def iniciar() -> int:
     """Inicia o daemon do bot."""
+    if setup_necessario():
+        print("Primeira execucao detectada. Iniciando o wizard de configuracao."); ret = cli_setup()
+        if ret != 0: return ret
     if pid := ler_pid(): print(f"BrazuClaw ja esta em execucao no PID {pid}."); return 0
     print("servico BrazuClaw iniciado"); daemonizar(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8"); return rodar_bot()
 
