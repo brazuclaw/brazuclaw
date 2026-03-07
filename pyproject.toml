@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brazuclaw"
+version = "0.1.0"
+description = "PoC de bot Telegram integrado ao Codex CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "BrazuClaw" }]
+dependencies = ["requests"]
+
+[project.scripts]
+brazuclaw = "brazuclaw.main:cli"
+brazuclaw-setup = "brazuclaw.wizard:cli"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["brazuclaw"]
+
+[tool.setuptools.package-data]
+brazuclaw = ["ALMA.md"]
