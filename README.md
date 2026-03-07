@@ -1,12 +1,13 @@
 # BrazuClaw
 
-Bot Telegram que repassa mensagens ao Codex CLI e devolve a resposta ao usuario.
+Bot Telegram que repassa mensagens a provedores de IA configuraveis (Codex, Claude, Gemini) e devolve a resposta ao usuario.
 
 ## Estado atual
 
 - onboarding via terminal com `brazuclaw-setup`
 - integracao direta com a API HTTP do Telegram usando `requests`
-- execucao do Codex CLI com `codex exec --yolo`
+- execucao de provedores de IA configuraveis (Codex, Claude, Gemini)
+- selecao de provedor e modelo independente para chat e task/cron
 - daemonizacao local com `brazuclaw start`, `brazuclaw stop` e `brazuclaw restart`
 - logs locais em `~/.brazuclaw/logs/brazuclaw.log`
 - consulta de logs com `brazuclaw logs` e `brazuclaw logs -f`
@@ -40,6 +41,8 @@ Comandos disponiveis:
 - `brazuclaw restart`
 - `brazuclaw logs`
 - `brazuclaw logs -f`
+- `brazuclaw provider bot [codex|claude|gemini]`
+- `brazuclaw provider task [codex|claude|gemini]`
 - `brazuclaw cron help`
 - `brazuclaw cron list`
 - `brazuclaw cron add --nome NOME --schedule "*/5 * * * *" --prompt "instrucao" [--chat 123] [--callback nunca|erro|sempre] [--timeout 120]`
@@ -63,5 +66,6 @@ brazuclaw cron add \
 Notas:
 
 - o scheduler e interno ao daemon do BrazuClaw; `brazuclaw start` sincroniza os jobs ativos do banco e pula janelas perdidas durante downtime
-- cada cron usa a mesma logica do bot: `ALMA.md`, memoria no SQLite e execucao via `codex exec --yolo`
+- cada cron usa a mesma logica do bot: `ALMA.md`, memoria no SQLite e execucao via provedor de IA configurado
+- provedor e modelo podem ser escolhidos durante `brazuclaw setup`
 - se um cron estiver em execucao, `brazuclaw cron abort ID` solicita o encerramento do subprocesso do Codex

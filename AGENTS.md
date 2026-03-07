@@ -1,7 +1,7 @@
 # AGENTS.md — BrazuClaw
 
 ## Geral
-- O projeto BrazuClaw é um chatbot Telegram que repassa mensagens do usuário ao Codex CLI e devolve a resposta
+- O projeto BrazuClaw é um chatbot Telegram que repassa mensagens do usuário a provedores de IA (Codex, Claude, Gemini) e devolve a resposta
 - Linguagem: Python 3.11+, código-fonte 100% em português (variáveis, comentários, docstrings)
 - Hardware alvo: Raspberry Pi 3 (1GB RAM, ARM quad-core 1.2GHz) ou laptop x86 equivalente (ex: Core 2 Duo, 2GB RAM, HDD)
 - O sistema deve funcionar bem com apenas 512MB de RAM livre e CPU lenta
@@ -9,7 +9,7 @@
 - Dependências permitidas: apenas `requests`
 - Nenhuma outra lib externa pode ser adicionada sem aprovação explícita
 - Todo arquivo gerado, configuração e dado do BrazuClaw fica em `~/.brazuclaw/`; nenhum arquivo é criado fora desse diretório
-- MUITO IMPORTANTE - o bot deve sempre rodar codex em linha de comando como este exemplo: `codex exec --yolo "<prompt aqui>" 2>/dev/null` para toda e qualquer tarefa, para garantir uma experiência de usuário fluida.
+- MUITO IMPORTANTE - o bot deve sempre rodar o provedor de IA em linha de comando (ex: `codex exec --yolo "<prompt>"`, `claude -p "<prompt>"`, `gemini -p "<prompt>"`) para toda e qualquer tarefa
 
 ## Empacotamento e Instalação
 - O projeto deve ser instalável via `pip install git+...` (ou `pip install .` do repo)
@@ -89,7 +89,7 @@
 - A comunicação com o Telegram usa a API HTTP direta via `requests`, sem wrappers
 - Long polling com `getUpdates` e `timeout=30` para reduzir chamadas HTTP e CPU idle
 - O parâmetro `offset` deve ser atualizado corretamente para nunca reprocessar mensagens
-- Cada mensagem é repassada ao Codex via subprocess `codex exec --yolo`
+- Cada mensagem é repassada ao provedor de IA configurado via subprocess
 - O subprocess roda com `nice -n 10` em Linux; em SO sem `nice`, ignorar sem erro
 - Timeout do subprocess: 120 segundos; após isso, abortar e avisar o usuário
 - O bot processa apenas uma mensagem por vez (sem threading, sem multiprocessing, sem async)
@@ -118,14 +118,11 @@
 
 ## Estrutura de Arquivos
 - `pyproject.toml` — configuração do pacote, dependências, `requires-python = ">=3.11"` e entry points
-- `brazuclaw/main.py` — CLI principal, daemonização, logs e loop de polling
-- `brazuclaw/telegram_api.py` — funções para API do Telegram
-- `brazuclaw/codex_runner.py` — monta prompt e executa subprocess
-- `brazuclaw/memoria.py` — gerencia histórico e estado persistidos em SQLite
-- `brazuclaw/config.py` — lê `~/.brazuclaw/config.env` e variáveis de ambiente
-- `brazuclaw/wizard.py` — wizard de onboarding interativo
+- `brazuclaw/main.py` — toda a lógica do bot, CLI, wizard, polling, cron
+- `brazuclaw/wizard.py` — re-export de `cli_setup` de `main.py`
+- `brazuclaw/__init__.py` — marcador de pacote
 - `brazuclaw/ALMA.md` — personalidade padrão incluída no pacote
-- `AGENTS.md` — este documento, fonte de verdade do projeto
+- `CLAUDE.md` — fonte de verdade do projeto
 
 ## Código
 - Total de todos os `.py` somados: máximo 1000 linhas
@@ -137,35 +134,16 @@
 - Encoding UTF-8; compatível com terminais sem suporte a emoji
 - O AGENTS.md é a fonte de verdade para qualquer agente de código neste projeto
 
-## Próximos itens
-- Objetivo de médio prazo: reduzir a codebase para perto de 500 linhas sem remover suporte a cron
-- Objetivo aspiracional: tentar aproximar a codebase de 400 linhas apenas se houver aprovação explícita para novas dependências e wrappers adicionais
-- Antes de qualquer nova feature, corrigir dois problemas atuais: persistência acidental de segredos do ambiente em `config.env` e loop de validação do token quando `BRAZUCLAW_TOKEN` inválido vier do ambiente
-- Manter cron como requisito do produto; não remover scheduler, comandos de cron nem persistência de cron para reduzir linhas
-
-### Fase 1 — Redução sem mudar a arquitetura principal
-- Consolidar responsabilidades em `brazuclaw/main.py`, separando o fluxo em poucos blocos centrais: CLI, loop do bot, processamento de mensagem e execução de cron
-- Remover duplicação entre wizard, CLI e validações de ambiente
-- Simplificar `brazuclaw/memoria.py` para expor apenas operações essenciais de histórico, offset e cron
-- Simplificar `brazuclaw/codex_runner.py` para concentrar montagem de prompt, execução do subprocess e parsing de anexos/cron
-- Meta desta fase: ficar abaixo de 800 linhas totais sem adicionar dependências
-
-### Fase 2 — Dependências candidatas para aprovação explícita
-- `click`: abstrair CLI, subcomandos, help, parsing de flags, prompts e confirmações do wizard
-- `python-dotenv`: abstrair leitura de `config.env` sem regravar variáveis vindas do ambiente
-- `cronsim`: abstrair parsing de expressão cron e cálculo do próximo horário
-- `python-daemon`: opcional; abstrair daemonização POSIX em Linux, macOS e WSL
-- `python-telegram-bot`: opcional e de alto impacto; abstrair polling, handlers, download de anexos, chat action e envio de mensagens/anexos
-
-### Fase 3 — Blocos a abstrair se as libs forem aprovadas
-- Com `click`: substituir parser manual de CLI em `brazuclaw/main.py` e prompts manuais em `brazuclaw/wizard.py`
-- Com `python-dotenv`: substituir parser manual e mesclagem de configuração em `brazuclaw/config.py`
-- Com `cronsim`: substituir parser cron manual e cálculo de próximo disparo hoje concentrados em `brazuclaw/main.py`
-- Com `python-daemon`: substituir o bloco de double-fork e redirecionamento manual de descritores em `brazuclaw/main.py`
-- Com `python-telegram-bot`: substituir a camada HTTP manual em `brazuclaw/telegram_api.py` e reduzir significativamente o loop de polling em `brazuclaw/main.py`
-
-### Fase 4 — Metas de tamanho por cenário
-- Cenário conservador: `click` + `python-dotenv` + `cronsim`; meta provável entre 650 e 750 linhas
-- Cenário agressivo: `click` + `python-dotenv` + `cronsim` + `python-daemon`; meta provável entre 600 e 700 linhas
-- Cenário de máximo corte: itens acima + `python-telegram-bot`; meta provável entre 500 e 650 linhas
-- Não prometer menos de 400 linhas enquanto cron permanecer obrigatório e a arquitetura continuar com daemon local, SQLite local e execução via `codex exec --yolo`
+## Provedores de IA
+- Três provedores suportados: `codex`, `claude`, `gemini`
+- Provedor e modelo são configuráveis independentemente para bot (chat) e task (cron)
+- Config keys em `~/.brazuclaw/config.env`:
+  - `BRAZUCLAW_PROVIDER_BOT=codex` — provedor para chat (codex | claude | gemini)
+  - `BRAZUCLAW_PROVIDER_TASK=codex` — provedor para cron/jobs (codex | claude | gemini)
+  - `BRAZUCLAW_MODEL_BOT=` — modelo opcional para chat
+  - `BRAZUCLAW_MODEL_TASK=` — modelo opcional para task
+- Registry de provedores com binário, args base e flag de modelo para cada um
+- Comandos CLI: `brazuclaw provider bot [provedor]` e `brazuclaw provider task [provedor]`
+- Wizard permite escolher provedor+modelo para bot e task; etapas de Node.js/Codex são condicionais
+- Para gemini: filtrar linhas de stderr com "Loaded cached credentials." após execução
+- Default: codex (compatível com configs existentes sem chaves PROVIDER)

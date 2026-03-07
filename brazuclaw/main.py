@@ -10,6 +10,12 @@ BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
 LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO = 1000, 256 * 1024, 10
 MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "", ""
+PROVEDORES = {
+    "codex":  {"binario": "codex",  "args_base": ["exec", "--yolo"], "flag_modelo": "-m",      "requer_node": True},
+    "claude": {"binario": "claude", "args_base": ["-p"],             "flag_modelo": "--model",  "requer_node": False},
+    "gemini": {"binario": "gemini", "args_base": ["-p"],             "flag_modelo": "--model",  "requer_node": False},
+}
+PROVEDOR_PADRAO = "codex"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
@@ -26,7 +32,7 @@ def config(so_local: bool = False) -> dict[str, str]:
         if "=" in linha and not linha.lstrip().startswith("#"):
             k, v = linha.split("=", 1); dados[k.strip()] = v.strip()
     if not so_local:
-        for k in ("BRAZUCLAW_TOKEN", "OPENAI_API_KEY"):
+        for k in ("BRAZUCLAW_TOKEN", "OPENAI_API_KEY", "BRAZUCLAW_PROVIDER_BOT", "BRAZUCLAW_PROVIDER_TASK", "BRAZUCLAW_MODEL_BOT", "BRAZUCLAW_MODEL_TASK"):
             if os.getenv(k): dados[k] = os.environ[k]
     return dados
 
@@ -96,16 +102,24 @@ def modelo(tipo: str = "bot") -> str:
     chave = "BRAZUCLAW_MODEL_BOT" if tipo == "bot" else "BRAZUCLAW_MODEL_TASK"
     return config().get(chave) or (MODELO_BOT_PADRAO if tipo == "bot" else MODELO_TASK_PADRAO)
 
+def provedor(tipo: str = "bot") -> str:
+    """Retorna o provedor configurado para bot ou task."""
+    chave = "BRAZUCLAW_PROVIDER_BOT" if tipo == "bot" else "BRAZUCLAW_PROVIDER_TASK"
+    nome = config().get(chave, PROVEDOR_PADRAO).strip().lower()
+    return nome if nome in PROVEDORES else PROVEDOR_PADRAO
+
 def carregar_alma() -> str:
     """Le ALMA.md do usuario e copia o padrao se faltar."""
     garantir_estrutura()
     if not ARQ["alma"].exists(): ARQ["alma"].write_text(resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8"), encoding="utf-8")
     return ARQ["alma"].read_text(encoding="utf-8").strip()
 
-def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "") -> str:
-    """Executa `codex exec --yolo` com timeout e aborto cooperativo."""
-    cmd = [shutil.which("codex") or "", "exec", "--yolo", *(["-m", modelo_nome] if modelo_nome else []), prompt]
-    if not cmd[0]: raise RuntimeError("Codex CLI nao encontrado no PATH.")
+def executar_ia(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "", provedor_nome: str = "codex") -> str:
+    """Executa o provedor de IA com timeout e aborto cooperativo."""
+    prov = PROVEDORES.get(provedor_nome, PROVEDORES[PROVEDOR_PADRAO])
+    binario = shutil.which(prov["binario"]) or ""
+    if not binario: raise RuntimeError(f'{prov["binario"]} nao encontrado no PATH.')
+    cmd = [binario, *prov["args_base"], *([prov["flag_modelo"], modelo_nome] if modelo_nome else []), prompt]
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
     if ao_iniciar: ao_iniciar(p.pid)
@@ -119,27 +133,32 @@ def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, de
         stdout, stderr = p.communicate()
         saida = (stdout or "").strip()
         erros = (stderr or "").strip()
+        if provedor_nome == "gemini": erros = "\n".join(l for l in erros.splitlines() if "Loaded cached credentials." not in l).strip()
     finally:
         if p.poll() is None: p.kill(); p.wait()
     if p.returncode and not saida:
         for marca in ("usage limit", "limit", "upgrade", "credits"):
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
-        raise RuntimeError(erros.split("\n")[-1] if erros else "Falha ao executar o Codex CLI.")
-    return saida or "Sem resposta do Codex CLI."
+        raise RuntimeError(erros.split("\n")[-1] if erros else f'Falha ao executar {prov["binario"]}.')
+    return saida or "Sem resposta do provedor de IA."
 
-def codex_ok() -> bool:
-    """Confirma se o Codex CLI esta autenticado."""
-    arq_auth = Path.home() / ".codex" / "auth.json"
-    if arq_auth.exists():
-        try:
-            dados = json.loads(arq_auth.read_text(encoding="utf-8"))
-            if dados.get("tokens"): return True
-        except Exception: pass
-    try: return bool(codex("Responda apenas: teste ok", 30))
+def provedor_ok(nome: str = "") -> bool:
+    """Confirma se o provedor de IA esta disponivel e autenticado."""
+    nome = nome or provedor("bot")
+    prov = PROVEDORES.get(nome, PROVEDORES[PROVEDOR_PADRAO])
+    if not shutil.which(prov["binario"]): return False
+    if nome == "codex":
+        arq_auth = Path.home() / ".codex" / "auth.json"
+        if arq_auth.exists():
+            try:
+                dados = json.loads(arq_auth.read_text(encoding="utf-8"))
+                if dados.get("tokens"): return True
+            except Exception: pass
+    try: return bool(executar_ia("Responda apenas: teste ok", 30, provedor_nome=nome))
     except Exception: return False
 
 def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome_cron: str = "") -> str:
-    """Monta o prompt do Codex com ALMA, memoria e anexos."""
+    """Monta o prompt do provedor de IA com ALMA, memoria e anexos."""
     partes = [
         "Responda em texto simples.",
         "Se precisar devolver anexo, use [anexo nome=\"arquivo.ext\" mimetype=\"tipo/subtipo\"] BASE64 [/anexo].",
@@ -153,7 +172,7 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     return "\n\n".join(partes)
 
 def interpretar(texto: str) -> dict[str, object]:
-    """Separa texto, anexos e crons da resposta do Codex."""
+    """Separa texto, anexos e crons da resposta do provedor de IA."""
     crons = []
     for attrs, corpo in PADRAO_CRON.findall(texto):
         d = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
@@ -202,7 +221,7 @@ def enviar(token: str, chat_id: int, resposta: dict[str, object]) -> tuple[str, 
     for i, a in enumerate(resposta.get("anexos", []) if isinstance(resposta.get("anexos"), list) else []):
         campo = "photo" if str(a.get("mimetype", "")).startswith("image/") else "document"
         tg(token, "sendPhoto" if campo == "photo" else "sendDocument", {"chat_id": str(chat_id), **({"caption": "Anexo gerado pelo BrazuClaw."} if not texto and not i else {})}, 80, {campo: (a.get("nome", "anexo.bin"), base64.b64decode(str(a.get("anexo_b64", "")).encode("ascii")), a.get("mimetype", "application/octet-stream"))}); primeiro = primeiro or a
-    if not texto and not primeiro: texto = "Sem resposta do Codex CLI."; tg(token, "sendMessage", {"chat_id": chat_id, "text": texto})
+    if not texto and not primeiro: texto = "Sem resposta do provedor de IA."; tg(token, "sendMessage", {"chat_id": chat_id, "text": texto})
     return texto, primeiro
 
 def aplicar_crons(chat_id: int, resposta: dict[str, object]) -> dict[str, object]:
@@ -219,7 +238,7 @@ def aplicar_crons(chat_id: int, resposta: dict[str, object]) -> dict[str, object
     resposta["texto"] = "\n\n".join(p for p in (texto, "\n".join(avisos)) if p).strip(); return resposta
 
 def cron_local(chat_id: int, texto: str) -> dict[str, object] | None:
-    """Resolve listar e remover cron sem chamar o Codex."""
+    """Resolve listar e remover cron sem chamar o provedor de IA."""
     texto = " ".join(texto.lower().split())
     if not texto or not any(p in texto for p in ("cron", "job", "agend")): return None
     crons = banco("SELECT * FROM crons WHERE ativo = 1 AND chat_callback_id = ? ORDER BY id", (chat_id,), varios=True)
@@ -241,11 +260,11 @@ def extrair_anexo(token: str, msg: dict) -> dict | None:
     if len(conteudo) > LIMITE_ANEXO: raise ValueError(f"Anexo acima do limite de {LIMITE_ANEXO // 1024} KB.")
     return {"nome": ("imagem.jpg" if msg.get("photo") else item.get("file_name", "arquivo.bin"))[:120], "mimetype": (msg.get("document") or {}).get("mime_type", tipo), "anexo_b64": base64.b64encode(conteudo).decode("ascii")}
 
-def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "") -> tuple[dict[str, object], str]:
-    """Monta prompt, chama Codex e interpreta retorno."""
-    try: return interpretar(codex(montar_prompt(chat_id, texto, refs, nome_cron), timeout, ao_aguardar, ao_iniciar, deve_abortar, modelo_nome)), "ok"
-    except subprocess.TimeoutExpired: return {"texto": f"O Codex demorou mais de {timeout} segundos e a execucao foi abortada.", "anexos": []}, "timeout"
-    except Exception as erro: return {"texto": "Execucao abortada pelo usuario." if "abortada" in str(erro).lower() else f"Falha ao consultar o Codex: {erro}", "anexos": []}, ("abortado" if "abortada" in str(erro).lower() else "erro")
+def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex") -> tuple[dict[str, object], str]:
+    """Monta prompt, chama provedor de IA e interpreta retorno."""
+    try: return interpretar(executar_ia(montar_prompt(chat_id, texto, refs, nome_cron), timeout, ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)), "ok"
+    except subprocess.TimeoutExpired: return {"texto": f"O provedor demorou mais de {timeout} segundos e a execucao foi abortada.", "anexos": []}, "timeout"
+    except Exception as erro: return {"texto": "Execucao abortada pelo usuario." if "abortada" in str(erro).lower() else f"Falha ao consultar o provedor: {erro}", "anexos": []}, ("abortado" if "abortada" in str(erro).lower() else "erro")
 
 def processar_mensagem(token: str, update: dict) -> None:
     """Processa uma unica mensagem do Telegram."""
@@ -260,7 +279,7 @@ def processar_mensagem(token: str, update: dict) -> None:
     if local := cron_local(chat_id, texto):
         txt, ax = enviar(token, chat_id, local); registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); return logar("resposta_local_cron", chat_id)
     refs = [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo["nome"], "mimetype": anexo["mimetype"]}]
-    resp, _ = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"))
+    resp, _ = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"), provedor_nome=provedor("bot"))
     txt, ax = enviar(token, chat_id, aplicar_crons(chat_id, resp))
     registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); logar("resposta_enviada", chat_id)
 
@@ -278,7 +297,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     atual = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
-    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"))
+    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
@@ -347,18 +366,41 @@ def cli_setup() -> int:
     if not confirmar("Continuar com este sistema?"): return 1
     print(f"Python detectado: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
     if sys.version_info < (3, 11): print("Python 3.11 ou superior e obrigatorio."); return 1
-    try: node = int(re.findall(r"\d+", subprocess.check_output(["node", "--version"], text=True, stderr=subprocess.DEVNULL))[0])
-    except Exception: node = 0
-    if node < 18:
-        cmd = "sudo apt-get update && sudo apt-get install -y nodejs npm" if chave_so in ("linux", "wsl") else ("brew install node" if chave_so == "darwin" else "")
-        print("Node.js 18+ nao encontrado."); print(f"Comando sugerido: {cmd}")
-        if not cmd or not confirmar("Executar este comando agora?") or subprocess.run(["bash", "-lc", cmd]).returncode: return 1
-    if not shutil.which("codex"):
-        print("Codex CLI nao encontrado.")
-        if not confirmar("Instalar com npm install -g @openai/codex?") or subprocess.run(["npm", "install", "-g", "@openai/codex"]).returncode or not shutil.which("codex"): return 1
-    if not codex_ok():
-        print("Sessao do Codex nao esta ativa.")
-        if subprocess.run([shutil.which("codex") or "codex", "login", "--device-auth"]).returncode or not codex_ok(): print("Falha ao autenticar o Codex CLI. Rode `codex login --device-auth` novamente."); return 1
+    # Selecao de provedor
+    nomes = ", ".join(PROVEDORES.keys())
+    prov_bot = perguntar(f"Provedor para chat ({nomes}) [codex]: ").lower() or "codex"
+    if prov_bot not in PROVEDORES: print(f"Provedor invalido: {prov_bot}"); return 1
+    prov_task = perguntar(f"Provedor para task/cron ({nomes}) [{prov_bot}]: ").lower() or prov_bot
+    if prov_task not in PROVEDORES: print(f"Provedor invalido: {prov_task}"); return 1
+    mod_bot = perguntar("Modelo para chat (Enter para padrao): ")
+    mod_task = perguntar("Modelo para task (Enter para padrao): ")
+    salvar_local("BRAZUCLAW_PROVIDER_BOT", prov_bot); salvar_local("BRAZUCLAW_PROVIDER_TASK", prov_task)
+    salvar_local("BRAZUCLAW_MODEL_BOT", mod_bot); salvar_local("BRAZUCLAW_MODEL_TASK", mod_task)
+    escolhidos = {prov_bot, prov_task}
+    # Node.js e Codex (condicional)
+    if "codex" in escolhidos:
+        try: node = int(re.findall(r"\d+", subprocess.check_output(["node", "--version"], text=True, stderr=subprocess.DEVNULL))[0])
+        except Exception: node = 0
+        if node < 18:
+            cmd = "sudo apt-get update && sudo apt-get install -y nodejs npm" if chave_so in ("linux", "wsl") else ("brew install node" if chave_so == "darwin" else "")
+            print("Node.js 18+ nao encontrado."); print(f"Comando sugerido: {cmd}")
+            if not cmd or not confirmar("Executar este comando agora?") or subprocess.run(["bash", "-lc", cmd]).returncode: return 1
+        if not shutil.which("codex"):
+            print("Codex CLI nao encontrado.")
+            if not confirmar("Instalar com npm install -g @openai/codex?") or subprocess.run(["npm", "install", "-g", "@openai/codex"]).returncode or not shutil.which("codex"): return 1
+        if not provedor_ok("codex"):
+            print("Sessao do Codex nao esta ativa.")
+            if subprocess.run([shutil.which("codex") or "codex", "login", "--device-auth"]).returncode or not provedor_ok("codex"): print("Falha ao autenticar o Codex CLI. Rode `codex login --device-auth` novamente."); return 1
+    if "claude" in escolhidos:
+        if not shutil.which("claude"):
+            print("Claude CLI nao encontrado. Instale com: npm install -g @anthropic-ai/claude-code")
+            if not confirmar("Instalar com npm install -g @anthropic-ai/claude-code?") or subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"]).returncode or not shutil.which("claude"): return 1
+        if not provedor_ok("claude"): print("Falha ao validar o Claude CLI. Verifique a autenticacao."); return 1
+    if "gemini" in escolhidos:
+        if not shutil.which("gemini"):
+            print("Gemini CLI nao encontrado. Instale seguindo: https://github.com/google-gemini/gemini-cli"); return 1
+        if not provedor_ok("gemini"): print("Falha ao validar o Gemini CLI. Verifique a autenticacao."); return 1
+    # Token Telegram
     print("Crie um bot no Telegram:\n1. Abra o Telegram e procure @BotFather\n2. Envie /newbot\n3. Defina nome e username do bot\n4. Cole o token aqui")
     env_token = os.getenv("BRAZUCLAW_TOKEN", "").strip()
     if env_token:
@@ -371,21 +413,40 @@ def cli_setup() -> int:
             print(f'Token validado. Bot: @{validar_token(token).get("username", "sem_username")}'); salvar_local("BRAZUCLAW_TOKEN", token); break
         except Exception as erro: print(f"Token invalido: {erro}")
     carregar_alma(); print(f"ALMA pronta em: {ARQ['alma']}")
-    if not codex_ok(): print("Falha no teste local do Codex CLI."); return 1
-    print(f"Resumo final:\n- SO: {nome_so}\n- Node.js: ok\n- Codex CLI: ok\n- Token Telegram: ok\n- Personalidade: {ARQ['alma']}\n- Dados locais: {BASE}\n- Iniciar bot: brazuclaw\n- Ver logs: brazuclaw logs -f")
+    # Teste final
+    for p in escolhidos:
+        if not provedor_ok(p): print(f"Falha no teste do provedor {p}."); return 1
+    print(f"Resumo final:\n- SO: {nome_so}\n- Provedor bot: {prov_bot}" + (f" (modelo: {mod_bot})" if mod_bot else "") + f"\n- Provedor task: {prov_task}" + (f" (modelo: {mod_task})" if mod_task else "") + f"\n- Token Telegram: ok\n- Personalidade: {ARQ['alma']}\n- Dados locais: {BASE}\n- Iniciar bot: brazuclaw\n- Ver logs: brazuclaw logs -f")
     return 0
 
 def setup_necessario() -> bool:
     """Verifica se o setup precisa rodar."""
-    token = config().get("BRAZUCLAW_TOKEN")
-    return not token or not PADRAO_TOKEN.match(token)
+    cfg = config(); token = cfg.get("BRAZUCLAW_TOKEN")
+    if not token or not PADRAO_TOKEN.match(token): return True
+    prov = PROVEDORES.get(cfg.get("BRAZUCLAW_PROVIDER_BOT", PROVEDOR_PADRAO), PROVEDORES[PROVEDOR_PADRAO])
+    return not shutil.which(prov["binario"])
+
+def matar_instancias_orfas() -> None:
+    """Mata processos brazuclaw orfaos que nao estao no PID file."""
+    pid_atual = ler_pid()
+    try:
+        saida = subprocess.check_output(["pgrep", "-f", "brazuclaw"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception: return
+    for linha in saida.splitlines():
+        try:
+            pid = int(linha.strip())
+            if pid != os.getpid() and pid != pid_atual:
+                os.kill(pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError): pass
 
 def iniciar() -> int:
     """Inicia o daemon do bot."""
     if setup_necessario():
         print("Primeira execucao detectada. Iniciando o wizard de configuracao."); ret = cli_setup()
         if ret != 0: return ret
+    matar_instancias_orfas()
     if pid := ler_pid(): print(f"BrazuClaw ja esta em execucao no PID {pid}."); return 0
+    garantir_estrutura(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8")
     print("servico BrazuClaw iniciado"); daemonizar(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8"); return rodar_bot()
 
 def parar() -> int:
@@ -430,13 +491,19 @@ def cli() -> int:
     if args[0] == "stop": return parar()
     if args[0] == "restart": return iniciar() if parar() == 0 else 1
     if args[0] == "logs": return logs(args[1:])
-    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model]"); return 0
+    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider]"); return 0
+    if args[0] == "provider":
+        if len(args) < 2 or args[1] not in ("bot", "task"): print(f"Uso: brazuclaw provider bot [provedor] | brazuclaw provider task [provedor]\nAtual: bot={provedor('bot')} task={provedor('task')}"); return 0
+        tipo, chave = args[1], "BRAZUCLAW_PROVIDER_BOT" if args[1] == "bot" else "BRAZUCLAW_PROVIDER_TASK"
+        if len(args) < 3: print(f"Provedor {tipo}: {provedor(tipo)}"); return 0
+        if args[2] not in PROVEDORES: print(f"Provedor invalido. Opcoes: {', '.join(PROVEDORES.keys())}"); return 1
+        salvar_local(chave, args[2]); print(f"Provedor {tipo} atualizado para: {args[2]}"); return 0
     if args[0] == "model":
         if len(args) < 2 or args[1] not in ("bot", "task"): print(f"Uso: brazuclaw model bot [modelo] | brazuclaw model task [modelo]\nAtual: bot={modelo('bot')} task={modelo('task')}"); return 0
         tipo, chave = args[1], "BRAZUCLAW_MODEL_BOT" if args[1] == "bot" else "BRAZUCLAW_MODEL_TASK"
         if len(args) < 3: print(f"Modelo {tipo}: {modelo(tipo)}"); return 0
         salvar_local(chave, args[2]); print(f"Modelo {tipo} atualizado para: {args[2]}"); return 0
-    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model]"); return 0
+    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider]"); return 0
     if len(args) < 2 or args[1] == "list":
         for c in banco("SELECT * FROM crons ORDER BY id", varios=True):
             prox = "-" if not c["proximo_em"] else datetime.fromtimestamp(c["proximo_em"]).strftime("%Y-%m-%d %H:%M")
