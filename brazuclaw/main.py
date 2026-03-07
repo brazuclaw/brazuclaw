@@ -8,7 +8,7 @@ import requests
 
 BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
-LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO, EXECUTANDO = 1000, 256 * 1024, 10, True
+LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO = 1000, 256 * 1024, 10
 MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "", ""
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
@@ -289,8 +289,8 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     logar(f"cron_{status}", sessao)
 
 def encerrar(_sig: int, _frame: object) -> None:
-    """Pede encerramento do loop principal."""
-    global EXECUTANDO; EXECUTANDO = False
+    """Encerra o daemon imediatamente via SystemExit."""
+    raise SystemExit(0)
 
 def daemonizar() -> None:
     """Desacopla o processo atual do terminal."""
@@ -314,7 +314,7 @@ def rodar_bot() -> int:
     for c in banco("SELECT id, schedule, ativo FROM crons", varios=True): banco("UPDATE crons SET proximo_em = ? WHERE id = ?", (cron_proximo(str(c["schedule"]), int(time.time()) - 60) if int(c["ativo"]) else 0, c["id"]))
     offset = int(estado("telegram_offset") or "0") or None; logar("bot_iniciado")
     try:
-        while EXECUTANDO:
+        while True:
             try:
                 if cron := banco("SELECT * FROM crons WHERE ativo = 1 AND pid_atual = 0 AND proximo_em > 0 AND proximo_em <= ? ORDER BY proximo_em, id LIMIT 1", (int(time.time()),), um=True): executar_cron(cron, token); continue
                 for update in tg(token, "getUpdates", {"timeout": 30, "allowed_updates": ["message"], **({"offset": offset} if offset else {})}, 40):
