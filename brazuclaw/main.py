@@ -107,7 +107,7 @@ def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, de
     cmd = [shutil.which("codex") or "", "exec", "--yolo", *(["-m", modelo_nome] if modelo_nome else []), prompt]
     if not cmd[0]: raise RuntimeError("Codex CLI nao encontrado no PATH.")
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=os.environ.copy())
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
     if ao_iniciar: ao_iniciar(p.pid)
     inicio = prox = time.monotonic()
     try:
@@ -116,10 +116,15 @@ def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, de
             if deve_abortar and deve_abortar(): p.kill(); p.wait(); raise RuntimeError("Execucao abortada.")
             if ao_aguardar and time.monotonic() >= prox: ao_aguardar(); prox = time.monotonic() + 4
             time.sleep(0.2)
-        saida = (p.communicate()[0] or "").strip()
+        stdout, stderr = p.communicate()
+        saida = (stdout or "").strip()
+        erros = (stderr or "").strip()
     finally:
         if p.poll() is None: p.kill(); p.wait()
-    if p.returncode and not saida: raise RuntimeError("Falha ao executar o Codex CLI.")
+    if p.returncode and not saida:
+        for marca in ("usage limit", "limit", "upgrade", "credits"):
+            if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
+        raise RuntimeError("Falha ao executar o Codex CLI.")
     return saida or "Sem resposta do Codex CLI."
 
 def codex_ok() -> bool:
