@@ -16,18 +16,20 @@
 - Usar `pyproject.toml` como único arquivo de configuração do pacote (sem setup.py, sem setup.cfg)
 - O `pyproject.toml` deve declarar `requires-python = ">=3.11"` para que pip recuse instalação em versões anteriores
 - O pip deve falhar com erro claro se o usuário tentar instalar em Python < 3.11; isso é responsabilidade do campo `requires-python`
-- O pacote deve registrar alguns comandos CLI via entry points: `brazuclaw` (inicia o bot. caso wizard nunca tenha rodado, roda o wizard), `brazuclaw setup` (inicia o wizard), `brazuclaw start`, `brazuclaw stop` e `brazuclaw logs` (com extra arg para tail)
+- O pacote deve registrar os comandos CLI já implementados: entry points `brazuclaw` e `brazuclaw-setup`, com subcomandos `brazuclaw setup`, `brazuclaw start`, `brazuclaw stop`, `brazuclaw restart` e `brazuclaw logs`
 - Após `pip install`, o usuário roda `brazuclaw-setup` e o wizard guia tudo; depois roda `brazuclaw` para iniciar o bot
-- O pacote deve incluir o `personalidade_padrao.txt` via `package_data`
+- O pacote deve incluir o arquivo padrão de personalidade (`ALMA.md`) via `package_data`
 
 ## Diretório `~/.brazuclaw/`
 - Criado automaticamente pelo wizard ou pelo bot na primeira execução, se não existir
-- `~/.brazuclaw/config.env` — armazena `BRAZUCLAW_TOKEN` e `OPENAI_API_KEY` em formato `CHAVE=valor`
-- `~/.brazuclaw/personalidade.txt` — arquivo de personalidade do bot; copiado do padrão do pacote se não existir
-- `~/.brazuclaw/logs/` — diretório opcional para logs futuros (não usado na v1, mas reservado)
+- `~/.brazuclaw/config.env` — armazena configuração local em formato `CHAVE=valor`
+- `~/.brazuclaw/ALMA.md` — arquivo de personalidade do bot; copiado do padrão do pacote se não existir
+- `~/.brazuclaw/logs/brazuclaw.log` — arquivo de log do daemon
+- `~/.brazuclaw/db/mensagens.db` — SQLite com histórico, anexos e estado do bot
+- `~/.brazuclaw/brazuclaw.pid` — PID do processo em background quando o daemon está ativo
 - O bot e o wizard leem variáveis primeiro de `~/.brazuclaw/config.env`, depois do ambiente do sistema; ambiente do sistema tem prioridade
 - Nenhum outro diretório ou arquivo fora de `~/.brazuclaw/` deve ser criado ou modificado pelo BrazuClaw
-- logs em `~/.brazuclaw/logs/`
+- logs ficam em `~/.brazuclaw/logs/`
 
 ## Wizard de Onboarding (`brazuclaw-setup`)
 - O wizard roda 100% no terminal, interativo, com prompts simples em português do Brasil
@@ -55,11 +57,10 @@
 - Após instalação, verificar novamente se `codex` está acessível
 
 ### Etapa 5 — Configurar autenticação do Codex
-- Checar se existe `OPENAI_API_KEY` no ambiente ou em `~/.brazuclaw/config.env`
-- Se não existir, pedir ao usuário para colar a chave da API OpenAI
-- Salvar a chave em `~/.brazuclaw/config.env` como `OPENAI_API_KEY=...`
-- Testar a chave executando `codex exec --yolo "echo teste ok" 2>/dev/null` e verificando saída
-- Se falhar, exibir erro claro e permitir reinserir a chave
+- Checar se o Codex CLI já está autenticado
+- Se não estiver, iniciar `codex login --device-auth`
+- Validar a autenticação executando uma chamada simples ao `codex exec --yolo`
+- Se falhar, exibir erro claro e instruir o usuário a refazer o login
 
 ### Etapa 6 — Configurar token do Telegram (BotFather)
 - Exibir instruções passo a passo de como criar um bot no `@BotFather` no Telegram
@@ -70,19 +71,17 @@
 - Se inválido, exibir erro e permitir reinserir
 
 ### Etapa 7 — Criar personalidade padrão
-- Verificar se já existe `~/.brazuclaw/personalidade.txt`
-- Se não existir, copiar o arquivo padrão do pacote para `~/.brazuclaw/personalidade.txt`
+- Verificar se já existe `~/.brazuclaw/ALMA.md`
+- Se não existir, copiar o arquivo padrão do pacote para `~/.brazuclaw/ALMA.md`
 - Informar ao usuário que pode editar o arquivo a qualquer momento
 
 ### Etapa 8 — Teste de ponta a ponta
-- Enviar uma mensagem de teste ao bot via API do Telegram (`/start` ou mensagem fixa)
-- Executar um ciclo completo: receber mensagem > chamar Codex > responder no Telegram
-- Exibir o resultado no terminal e perguntar se o usuário recebeu a resposta no Telegram
-- Se sim, exibir mensagem de sucesso e instruções para rodar `brazuclaw`
-- Se não, oferecer opções de diagnóstico (reverificar token, reverificar Codex, ver logs)
+- Validar localmente que o Codex CLI autenticado responde
+- Orientar o usuário a iniciar o bot e fazer o teste manual no Telegram
+- Informar o comando de consulta de logs caso algo falhe
 
 ### Etapa 9 — Resumo final
-- Exibir um resumo de tudo que foi configurado: SO, Node.js, Codex, token Telegram, personalidade
+- Exibir um resumo de tudo que foi configurado: SO, Node.js, Codex, token Telegram, personalidade e caminhos locais
 - Exibir o comando para iniciar o bot: `brazuclaw`
 
 ## Bot Telegram
@@ -90,44 +89,49 @@
 - A comunicação com o Telegram usa a API HTTP direta via `requests`, sem wrappers
 - Long polling com `getUpdates` e `timeout=30` para reduzir chamadas HTTP e CPU idle
 - O parâmetro `offset` deve ser atualizado corretamente para nunca reprocessar mensagens
-- Cada mensagem é repassada ao Codex via subprocess: `codex exec --yolo "<mensagem>" 2>/dev/null`
+- Cada mensagem é repassada ao Codex via subprocess `codex exec --yolo`
 - O subprocess roda com `nice -n 10` em Linux; em SO sem `nice`, ignorar sem erro
 - Timeout do subprocess: 120 segundos; após isso, abortar e avisar o usuário
 - O bot processa apenas uma mensagem por vez (sem threading, sem multiprocessing, sem async)
-- Ignorar mensagens que não sejam texto puro (fotos, stickers, áudio etc.)
+- Ignorar chats que não sejam privados
 - Responder apenas em chats privados; ignorar grupos por padrão
 - Mensagens com mais de 1000 caracteres: rejeitar com aviso ao usuário
+- Suportar texto, imagem e arquivo simples como entrada; stickers, áudio e outros tipos continuam fora do escopo
+- Permitir que o Codex devolva anexos em base64 para reenvio ao Telegram
+- O modo padrão de execução do CLI deve iniciar o daemon em background
+- Deve existir suporte a `stop`, `restart` e `logs`
 
 ## Memória
-- Últimas 10 mensagens por chat (pergunta + resposta) em dict Python, sem banco de dados, sem disco
-- Limite de 50 chats simultâneos; ao exceder, o chat mais antigo sem atividade é removido
+- Últimas 10 interações respondidas por chat devem ser usadas como contexto
+- Persistência local em SQLite, sem depender de serviço externo
 - Cada resposta armazenada truncada em 500 caracteres para economizar RAM
 - Memória injetada no prompt antes da mensagem atual; FIFO ao atingir 10
+- O offset do Telegram também deve ser persistido localmente para evitar reprocessamento após reinício
 
 ## Cron e banco de dados
-- Use um banco de dados para organizar tarefas recorrentes e outros jobs mais complexos solicitados ao bot
-- Use cron para agendar as tarefas
+- SQLite já é usado para histórico, anexos e estado do bot
+- Cron continua como trabalho futuro para tarefas recorrentes e jobs agendados
 
 ## Personalidade
-- Arquivo `~/.brazuclaw/personalidade.txt`; lido uma vez na inicialização e cacheado
+- Arquivo `~/.brazuclaw/ALMA.md`; lido sob demanda e criado a partir do padrão do pacote quando ausente
 - Se não existir, bot funciona sem personalidade customizada
 
 ## Estrutura de Arquivos
 - `pyproject.toml` — configuração do pacote, dependências, `requires-python = ">=3.11"` e entry points
-- `brazuclaw/main.py` — ponto de entrada do bot, loop de polling
+- `brazuclaw/main.py` — CLI principal, daemonização, logs e loop de polling
 - `brazuclaw/telegram_api.py` — funções para API do Telegram
 - `brazuclaw/codex_runner.py` — monta prompt e executa subprocess
-- `brazuclaw/memoria.py` — gerencia histórico por chat_id com limites de RAM
+- `brazuclaw/memoria.py` — gerencia histórico e estado persistidos em SQLite
 - `brazuclaw/config.py` — lê `~/.brazuclaw/config.env` e variáveis de ambiente
 - `brazuclaw/wizard.py` — wizard de onboarding interativo
-- `brazuclaw/personalidade_padrao.txt` — personalidade padrão incluída no pacote
+- `brazuclaw/ALMA.md` — personalidade padrão incluída no pacote
 - `AGENTS.md` — este documento, fonte de verdade do projeto
 
 ## Código
 - Total de todos os `.py` somados: máximo 1000 linhas
 - Todas as funções com docstrings em português
 - Sem classes; apenas funções puras e dicionários
-- Log via `print()`: timestamp, chat_id ofuscado, status; sem flush forçado (poupa I/O em HDD/SD)
+- Log via `print()`: timestamp, chat_id ofuscado, status; saída redirecionada para arquivo quando em daemon
 - Nenhum dado sensível nos logs
 - Sem arquivos temporários em disco
 - Encoding UTF-8; compatível com terminais sem suporte a emoji
