@@ -10,10 +10,12 @@ BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
 LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO = 1000, 256 * 1024, 10
 MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "", ""
+MODELOS_GEMINI = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+MODELO_GEMINI_PADRAO = MODELOS_GEMINI[0]
 PROVEDORES = {
-    "codex":  {"binario": "codex",  "args_base": ["exec", "--yolo"], "flag_modelo": "-m",      "requer_node": True},
-    "claude": {"binario": "claude", "args_base": ["-p"],             "flag_modelo": "--model",  "requer_node": False},
-    "gemini": {"binario": "gemini", "args_base": ["-p"],             "flag_modelo": "--model",  "requer_node": False},
+    "codex":  {"binario": "codex",  "args_base": ["exec", "--yolo"], "flag_modelo": "-m",      "modelo_antes": False, "requer_node": True},
+    "claude": {"binario": "claude", "args_base": ["-p"],             "flag_modelo": "--model",  "modelo_antes": True,  "requer_node": False},
+    "gemini": {"binario": "gemini", "args_base": ["--yolo", "-p"],    "flag_modelo": "--model",  "modelo_antes": True,  "requer_node": False},
 }
 PROVEDOR_PADRAO = "codex"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
@@ -100,7 +102,9 @@ def baixar_anexo(token: str, file_id: str) -> tuple[str, bytes]:
 def modelo(tipo: str = "bot") -> str:
     """Retorna o modelo configurado para bot ou task."""
     chave = "BRAZUCLAW_MODEL_BOT" if tipo == "bot" else "BRAZUCLAW_MODEL_TASK"
-    return config().get(chave) or (MODELO_BOT_PADRAO if tipo == "bot" else MODELO_TASK_PADRAO)
+    m = config().get(chave) or (MODELO_BOT_PADRAO if tipo == "bot" else MODELO_TASK_PADRAO)
+    if not m and provedor(tipo) == "gemini": return MODELO_GEMINI_PADRAO
+    return m
 
 def provedor(tipo: str = "bot") -> str:
     """Retorna o provedor configurado para bot ou task."""
@@ -119,7 +123,8 @@ def executar_ia(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=No
     prov = PROVEDORES.get(provedor_nome, PROVEDORES[PROVEDOR_PADRAO])
     binario = shutil.which(prov["binario"]) or ""
     if not binario: raise RuntimeError(f'{prov["binario"]} nao encontrado no PATH.')
-    cmd = [binario, *prov["args_base"], *([prov["flag_modelo"], modelo_nome] if modelo_nome else []), prompt]
+    flag_mod = [prov["flag_modelo"], modelo_nome] if modelo_nome else []
+    cmd = [binario, *(flag_mod if prov.get("modelo_antes") else []), *prov["args_base"], *([] if prov.get("modelo_antes") else flag_mod), prompt]
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
     if ao_iniciar: ao_iniciar(p.pid)
@@ -133,7 +138,10 @@ def executar_ia(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=No
         stdout, stderr = p.communicate()
         saida = (stdout or "").strip()
         erros = (stderr or "").strip()
-        if provedor_nome == "gemini": erros = "\n".join(l for l in erros.splitlines() if "Loaded cached credentials." not in l).strip()
+        if provedor_nome == "gemini":
+            _filtro = ("Loaded cached credentials.", "YOLO mode is enabled.")
+            saida = "\n".join(l for l in saida.splitlines() if not any(f in l for f in _filtro)).strip()
+            erros = "\n".join(l for l in erros.splitlines() if not any(f in l for f in _filtro)).strip()
     finally:
         if p.poll() is None: p.kill(); p.wait()
     if p.returncode and not saida:
@@ -359,6 +367,17 @@ def confirmar(texto: str) -> bool:
     """Pede confirmacao simples ao usuario."""
     return perguntar(texto + " [s/N]: ").lower() == "s"
 
+def escolher_modelo(prov: str, uso: str) -> str:
+    """Apresenta selecao de modelo para o provedor escolhido."""
+    if prov == "gemini":
+        print(f"\nModelos disponiveis para {uso} (gemini):")
+        for i, m in enumerate(MODELOS_GEMINI, 1): print(f"  {i}. {m}")
+        resp = perguntar(f"Escolha o numero do modelo [1]: ") or "1"
+        if resp.isdigit() and 1 <= int(resp) <= len(MODELOS_GEMINI): return MODELOS_GEMINI[int(resp) - 1]
+        if resp in MODELOS_GEMINI: return resp
+        print(f"Opcao invalida, usando padrao: {MODELO_GEMINI_PADRAO}"); return MODELO_GEMINI_PADRAO
+    return perguntar(f"Modelo para {uso} (Enter para padrao): ")
+
 def cli_setup() -> int:
     """Executa o wizard interativo de onboarding."""
     garantir_estrutura(); chave_so, nome_so = descobrir_so(); print(f"SO detectado: {nome_so}")
@@ -372,8 +391,8 @@ def cli_setup() -> int:
     if prov_bot not in PROVEDORES: print(f"Provedor invalido: {prov_bot}"); return 1
     prov_task = perguntar(f"Provedor para task/cron ({nomes}) [{prov_bot}]: ").lower() or prov_bot
     if prov_task not in PROVEDORES: print(f"Provedor invalido: {prov_task}"); return 1
-    mod_bot = perguntar("Modelo para chat (Enter para padrao): ")
-    mod_task = perguntar("Modelo para task (Enter para padrao): ")
+    mod_bot = escolher_modelo(prov_bot, "chat")
+    mod_task = escolher_modelo(prov_task, "task")
     salvar_local("BRAZUCLAW_PROVIDER_BOT", prov_bot); salvar_local("BRAZUCLAW_PROVIDER_TASK", prov_task)
     salvar_local("BRAZUCLAW_MODEL_BOT", mod_bot); salvar_local("BRAZUCLAW_MODEL_TASK", mod_task)
     escolhidos = {prov_bot, prov_task}
