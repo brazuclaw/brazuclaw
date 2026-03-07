@@ -48,7 +48,7 @@ def salvar_local(chave: str, valor: str) -> None:
 
 def logar(status: str, chat_id: int | None = None) -> None:
     """Escreve log simples sem dados sensiveis."""
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {'chat=----' if chat_id is None else f'chat=...{str(chat_id)[-4:]}'} {status}")
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {'chat=----' if chat_id is None else f'chat=...{str(chat_id)[-4:]}'} {status}", flush=True)
 
 def banco(sql: str, args: tuple = (), um: bool = False, varios: bool = False):
     """Executa SQL simples no banco local."""
@@ -322,6 +322,7 @@ def encerrar(_sig: int, _frame: object) -> None:
 def daemonizar() -> None:
     """Desacopla o processo atual do terminal."""
     if os.name != "posix": raise SystemExit("Modo daemon exige POSIX.")
+    sys.stdout.flush(); sys.stderr.flush()
     if os.fork() > 0: raise SystemExit(0)
     os.setsid()
     if os.fork() > 0: raise SystemExit(0)
