@@ -136,3 +136,36 @@
 - Sem arquivos temporários em disco
 - Encoding UTF-8; compatível com terminais sem suporte a emoji
 - O AGENTS.md é a fonte de verdade para qualquer agente de código neste projeto
+
+## Próximos itens
+- Objetivo de médio prazo: reduzir a codebase para perto de 500 linhas sem remover suporte a cron
+- Objetivo aspiracional: tentar aproximar a codebase de 400 linhas apenas se houver aprovação explícita para novas dependências e wrappers adicionais
+- Antes de qualquer nova feature, corrigir dois problemas atuais: persistência acidental de segredos do ambiente em `config.env` e loop de validação do token quando `BRAZUCLAW_TOKEN` inválido vier do ambiente
+- Manter cron como requisito do produto; não remover scheduler, comandos de cron nem persistência de cron para reduzir linhas
+
+### Fase 1 — Redução sem mudar a arquitetura principal
+- Consolidar responsabilidades em `brazuclaw/main.py`, separando o fluxo em poucos blocos centrais: CLI, loop do bot, processamento de mensagem e execução de cron
+- Remover duplicação entre wizard, CLI e validações de ambiente
+- Simplificar `brazuclaw/memoria.py` para expor apenas operações essenciais de histórico, offset e cron
+- Simplificar `brazuclaw/codex_runner.py` para concentrar montagem de prompt, execução do subprocess e parsing de anexos/cron
+- Meta desta fase: ficar abaixo de 800 linhas totais sem adicionar dependências
+
+### Fase 2 — Dependências candidatas para aprovação explícita
+- `click`: abstrair CLI, subcomandos, help, parsing de flags, prompts e confirmações do wizard
+- `python-dotenv`: abstrair leitura de `config.env` sem regravar variáveis vindas do ambiente
+- `cronsim`: abstrair parsing de expressão cron e cálculo do próximo horário
+- `python-daemon`: opcional; abstrair daemonização POSIX em Linux, macOS e WSL
+- `python-telegram-bot`: opcional e de alto impacto; abstrair polling, handlers, download de anexos, chat action e envio de mensagens/anexos
+
+### Fase 3 — Blocos a abstrair se as libs forem aprovadas
+- Com `click`: substituir parser manual de CLI em `brazuclaw/main.py` e prompts manuais em `brazuclaw/wizard.py`
+- Com `python-dotenv`: substituir parser manual e mesclagem de configuração em `brazuclaw/config.py`
+- Com `cronsim`: substituir parser cron manual e cálculo de próximo disparo hoje concentrados em `brazuclaw/main.py`
+- Com `python-daemon`: substituir o bloco de double-fork e redirecionamento manual de descritores em `brazuclaw/main.py`
+- Com `python-telegram-bot`: substituir a camada HTTP manual em `brazuclaw/telegram_api.py` e reduzir significativamente o loop de polling em `brazuclaw/main.py`
+
+### Fase 4 — Metas de tamanho por cenário
+- Cenário conservador: `click` + `python-dotenv` + `cronsim`; meta provável entre 650 e 750 linhas
+- Cenário agressivo: `click` + `python-dotenv` + `cronsim` + `python-daemon`; meta provável entre 600 e 700 linhas
+- Cenário de máximo corte: itens acima + `python-telegram-bot`; meta provável entre 500 e 650 linhas
+- Não prometer menos de 400 linhas enquanto cron permanecer obrigatório e a arquitetura continuar com daemon local, SQLite local e execução via `codex exec --yolo`
