@@ -9,6 +9,7 @@ import requests
 BASE = Path.home() / ".brazuclaw"
 ARQ = {"config": BASE / "config.env", "alma": BASE / "ALMA.md", "db": BASE / "db" / "mensagens.db", "log": BASE / "logs" / "brazuclaw.log", "pid": BASE / "brazuclaw.pid"}
 LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO, EXECUTANDO = 1000, 256 * 1024, 10, True
+MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "o4-mini", "gpt-5.4-low"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
@@ -90,15 +91,20 @@ def baixar_anexo(token: str, file_id: str) -> tuple[str, bytes]:
     r = requests.get(f"https://api.telegram.org/file/bot{token}/{caminho}", timeout=40); r.raise_for_status()
     return mimetypes.guess_type(caminho.rsplit("/", 1)[-1])[0] or "application/octet-stream", r.content
 
+def modelo(tipo: str = "bot") -> str:
+    """Retorna o modelo configurado para bot ou task."""
+    chave = "BRAZUCLAW_MODEL_BOT" if tipo == "bot" else "BRAZUCLAW_MODEL_TASK"
+    return config().get(chave) or (MODELO_BOT_PADRAO if tipo == "bot" else MODELO_TASK_PADRAO)
+
 def carregar_alma() -> str:
     """Le ALMA.md do usuario e copia o padrao se faltar."""
     garantir_estrutura()
     if not ARQ["alma"].exists(): ARQ["alma"].write_text(resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8"), encoding="utf-8")
     return ARQ["alma"].read_text(encoding="utf-8").strip()
 
-def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None) -> str:
+def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "") -> str:
     """Executa `codex exec --yolo` com timeout e aborto cooperativo."""
-    cmd = [shutil.which("codex") or "", "exec", "--yolo", prompt]
+    cmd = [shutil.which("codex") or "", "exec", "--yolo", *(["-m", modelo_nome] if modelo_nome else []), prompt]
     if not cmd[0]: raise RuntimeError("Codex CLI nao encontrado no PATH.")
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=os.environ.copy())
@@ -224,9 +230,9 @@ def extrair_anexo(token: str, msg: dict) -> dict | None:
     if len(conteudo) > LIMITE_ANEXO: raise ValueError(f"Anexo acima do limite de {LIMITE_ANEXO // 1024} KB.")
     return {"nome": ("imagem.jpg" if msg.get("photo") else item.get("file_name", "arquivo.bin"))[:120], "mimetype": (msg.get("document") or {}).get("mime_type", tipo), "anexo_b64": base64.b64encode(conteudo).decode("ascii")}
 
-def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "") -> tuple[dict[str, object], str]:
+def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "") -> tuple[dict[str, object], str]:
     """Monta prompt, chama Codex e interpreta retorno."""
-    try: return interpretar(codex(montar_prompt(chat_id, texto, refs, nome_cron), timeout, ao_aguardar, ao_iniciar, deve_abortar)), "ok"
+    try: return interpretar(codex(montar_prompt(chat_id, texto, refs, nome_cron), timeout, ao_aguardar, ao_iniciar, deve_abortar, modelo_nome)), "ok"
     except subprocess.TimeoutExpired: return {"texto": f"O Codex demorou mais de {timeout} segundos e a execucao foi abortada.", "anexos": []}, "timeout"
     except Exception as erro: return {"texto": "Execucao abortada pelo usuario." if "abortada" in str(erro).lower() else f"Falha ao consultar o Codex: {erro}", "anexos": []}, ("abortado" if "abortada" in str(erro).lower() else "erro")
 
@@ -243,7 +249,7 @@ def processar_mensagem(token: str, update: dict) -> None:
     if local := cron_local(chat_id, texto):
         txt, ax = enviar(token, chat_id, local); registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); return logar("resposta_local_cron", chat_id)
     refs = [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo["nome"], "mimetype": anexo["mimetype"]}]
-    resp, _ = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10))
+    resp, _ = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"))
     txt, ax = enviar(token, chat_id, aplicar_crons(chat_id, resp))
     registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); logar("resposta_enviada", chat_id)
 
@@ -261,7 +267,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     atual = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
-    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]))
+    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"))
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
@@ -398,8 +404,13 @@ def cli() -> int:
     if args[0] == "stop": return parar()
     if args[0] == "restart": return iniciar() if parar() == 0 else 1
     if args[0] == "logs": return logs(args[1:])
-    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron]"); return 0
-    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron]"); return 0
+    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model]"); return 0
+    if args[0] == "model":
+        if len(args) < 2 or args[1] not in ("bot", "task"): print(f"Uso: brazuclaw model bot [modelo] | brazuclaw model task [modelo]\nAtual: bot={modelo('bot')} task={modelo('task')}"); return 0
+        tipo, chave = args[1], "BRAZUCLAW_MODEL_BOT" if args[1] == "bot" else "BRAZUCLAW_MODEL_TASK"
+        if len(args) < 3: print(f"Modelo {tipo}: {modelo(tipo)}"); return 0
+        salvar_local(chave, args[2]); print(f"Modelo {tipo} atualizado para: {args[2]}"); return 0
+    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model]"); return 0
     if len(args) < 2 or args[1] == "list":
         for c in banco("SELECT * FROM crons ORDER BY id", varios=True):
             prox = "-" if not c["proximo_em"] else datetime.fromtimestamp(c["proximo_em"]).strftime("%Y-%m-%d %H:%M")
