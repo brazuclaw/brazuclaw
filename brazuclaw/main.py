@@ -1,6 +1,6 @@
 """CLI, wizard, bot Telegram e cron do BrazuClaw."""
 from __future__ import annotations
-import base64, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
+import base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
 from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
@@ -124,6 +124,12 @@ def codex(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, de
 
 def codex_ok() -> bool:
     """Confirma se o Codex CLI esta autenticado."""
+    arq_auth = Path.home() / ".codex" / "auth.json"
+    if arq_auth.exists():
+        try:
+            dados = json.loads(arq_auth.read_text(encoding="utf-8"))
+            if dados.get("tokens"): return True
+        except Exception: pass
     try: return bool(codex("Responda apenas: teste ok", 30))
     except Exception: return False
 
