@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, re, shutil, subprocess, time
 
 PADRAO_ANEXO = re.compile(r"\[anexo nome=\"([^\"]+)\" mimetype=\"([^\"]+)\"\]\s*(.*?)\s*\[/anexo\]", re.DOTALL)
-
+PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.DOTALL)
 
 def _caminho_codex() -> str:
     """Resolve o caminho absoluto do executavel do Codex CLI."""
@@ -41,8 +41,8 @@ def _serializar_anexos(anexos: list[dict], referencia: bool = False) -> str:
     return "\n\n".join(blocos)
 
 
-def montar_prompt(personalidade: str, contexto: str, mensagem: str, anexos: list[dict] | None = None, referencias_anexos: list[dict] | None = None) -> str:
-    """Monta o prompt final enviado ao Codex CLI."""
+def _instrucoes_base(permitir_cron: bool) -> list[str]:
+    """Retorna as instrucoes fixas da chamada ao Codex."""
     partes = [
         "Responda em texto simples.",
         "Se precisar devolver imagem ou arquivo, use exatamente este formato:",
@@ -51,6 +51,24 @@ def montar_prompt(personalidade: str, contexto: str, mensagem: str, anexos: list
         "[/anexo]",
         "Nunca use markdown para anexos.",
     ]
+    if permitir_cron:
+        partes.extend(
+            [
+                "Se o usuario pedir uma tarefa recorrente ou um agendamento continuo, crie um bloco de cron neste formato:",
+                "[cron nome=\"nome-curto\" schedule=\"*/5 * * * *\" callback=\"sempre\"]",
+                "instrucao que devera rodar em cada execucao",
+                "[/cron]",
+                "Use `callback=\"sempre\"` quando o usuario precisar receber o resultado no Telegram.",
+                "Use `callback=\"erro\"` quando so precisar avisar em caso de falha.",
+                "Use apenas expressoes cron de 5 campos.",
+            ]
+        )
+    return partes
+
+
+def montar_prompt(personalidade: str, contexto: str, mensagem: str, anexos: list[dict] | None = None, referencias_anexos: list[dict] | None = None, permitir_cron: bool = True) -> str:
+    """Monta o prompt final enviado ao Codex CLI."""
+    partes = _instrucoes_base(permitir_cron)
     if personalidade.strip():
         partes.append("Arquivo ALMA.md carregado para esta chamada:\n" + personalidade.strip())
     if contexto.strip():
@@ -63,11 +81,39 @@ def montar_prompt(personalidade: str, contexto: str, mensagem: str, anexos: list
     return "\n\n".join(partes)
 
 
+def montar_prompt_cron(personalidade: str, contexto: str, nome: str, instrucao: str) -> str:
+    """Monta o prompt para uma execucao automatica de cron."""
+    partes = _instrucoes_base(False)
+    if personalidade.strip():
+        partes.append("Arquivo ALMA.md carregado para esta chamada:\n" + personalidade.strip())
+    if contexto.strip():
+        partes.append("Contexto recente:\n" + contexto.strip())
+    partes.append(f'Execucao automatica do cron "{nome.strip() or "cron"}".')
+    partes.append("Execute a instrucao abaixo agora e devolva somente o resultado util da tarefa.")
+    partes.append("Nao crie novos blocos [cron] nesta execucao e nao descreva metadados internos do scheduler.")
+    partes.append("Instrucao agendada:\n" + (instrucao.strip() or "(sem instrucao)"))
+    return "\n\n".join(partes)
+
+
 def interpretar_resposta_codex(texto: str) -> dict[str, object]:
     """Separa texto e anexos retornados pelo Codex."""
+    crons = []
+    for atributos, conteudo in PADRAO_CRON.findall(texto):
+        campos = dict(re.findall(r'(\w+)="([^"]*)"', atributos))
+        if campos.get("nome") and campos.get("schedule") and conteudo.strip():
+            crons.append(
+                {
+                    "nome": campos["nome"][:80],
+                    "schedule": campos["schedule"].strip(),
+                    "callback": (campos.get("callback") or "sempre").strip(),
+                    "timeout": int(campos.get("timeout") or 120),
+                    "prompt": conteudo.strip(),
+                }
+            )
     return {
-        "texto": PADRAO_ANEXO.sub("", texto).strip(),
+        "texto": PADRAO_CRON.sub("", PADRAO_ANEXO.sub("", texto)).strip(),
         "anexos": [{"nome": n[:120], "mimetype": m[:120], "anexo_b64": "".join(c.split())} for n, m, c in PADRAO_ANEXO.findall(texto)],
+        "crons": crons,
     }
 
 

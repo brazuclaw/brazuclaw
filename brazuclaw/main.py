@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64, os, signal, subprocess, sys, time
 from datetime import datetime, timedelta
 from importlib import resources
-from brazuclaw.codex_runner import codex_esta_autenticado, executar_codex_monitorado, interpretar_resposta_codex, montar_prompt
+from brazuclaw.codex_runner import codex_esta_autenticado, executar_codex_monitorado, interpretar_resposta_codex, montar_prompt, montar_prompt_cron
 from brazuclaw.config import ARQUIVO_ALMA, ARQUIVO_DB, ARQUIVO_LOG, ARQUIVO_PID, garantir_estrutura, obter_configuracao
 from brazuclaw.memoria import atualizar_cron, criar_cron, crons_vencidos, garantir_banco, limpar_execucoes_crons, listar_crons, montar_contexto, obter_cron, obter_estado, registrar_interacao, remover_cron, salvar_estado, update_processado
 from brazuclaw.telegram_api import baixar_anexo, buscar_updates, enviar_acao_digitando, enviar_anexo, enviar_texto, validar_token
@@ -135,6 +135,42 @@ def _enviar_resposta(token: str, chat_id: int, resposta: dict[str, object]) -> t
         aviso = f"Falha ao enviar resposta do Codex: {erro}"
         enviar_texto(token, chat_id, aviso[:4000])
         return aviso, None
+def _aplicar_crons(chat_id: int, resposta: dict[str, object]) -> dict[str, object]:
+    """Cria cron jobs pedidos pelo agente e adiciona confirmacoes ao texto."""
+    crons = resposta.get("crons", [])
+    if not isinstance(crons, list) or not crons:
+        return resposta
+    avisos, ids = [], []
+    for cron in crons:
+        try:
+            callback = str(cron.get("callback", "sempre")).strip() or "sempre"
+            if callback not in ("nunca", "erro", "sempre"):
+                callback = "sempre"
+            timeout = max(30, int(cron.get("timeout", 120) or 120))
+            schedule = str(cron.get("schedule", "")).strip()
+            cron_id = criar_cron(str(cron.get("nome", "cron"))[:80], str(cron.get("prompt", "")).strip(), schedule, chat_id if callback != "nunca" else 0, callback, timeout, _proximo_schedule(schedule))
+            ids.append(cron_id)
+            avisos.append(f'Cron #{cron_id} criado: "{cron.get("nome", "cron")}" em `{schedule}`.')
+        except Exception as erro:
+            avisos.append(f'Falha ao criar cron "{cron.get("nome", "cron")}": {erro}')
+    texto = str(resposta.get("texto", "")).strip()
+    resposta["texto"] = "\n\n".join(parte for parte in [texto, "\n".join(avisos)] if parte).strip()
+    resposta["crons"] = []
+    registrar(("cron_criado=" + ",".join(map(str, ids))) if ids else "cron_criacao_falhou", chat_id)
+    return resposta
+def _resposta_local_cron(chat_id: int, texto: str) -> dict[str, object] | None:
+    """Resolve listagem e remocao simples de crons sem depender do Codex."""
+    t = " ".join((texto or "").lower().split())
+    if not t or not any(p in t for p in ("job", "jobs", "agend", "cron")): return None
+    crons = [c for c in listar_crons(True) if int(c["chat_callback_id"] or 0) == chat_id]
+    if any(p in t for p in ("liste", "listar", "lista", "quais", "mostre")):
+        if not crons: return {"texto": "No momento, nao ha nenhum agendamento ativo.", "anexos": []}
+        itens = [f'{i}. nome: {c["nome"]}\nschedule: {c["schedule"]}\ncallback: {c["callback_quando"]}\ninstrucao: {c["prompt"]}' for i, c in enumerate(crons, 1)]
+        return {"texto": "Jobs em agenda no momento:\n\n" + "\n\n".join(itens), "anexos": []}
+    if any(p in t for p in ("remova", "remove", "apague", "delete", "cancele", "cancel", "exclua")):
+        alvo = crons[:1] if any(p in t for p in ("antig", "older", "mais velho")) else crons; [remover_cron(int(c["id"])) for c in alvo]
+        return {"texto": ("Cron mais antigo removido." if alvo and len(alvo) == 1 and len(crons) > 1 else "Todos os jobs agendados foram removidos.") if alvo else "No momento, nao ha nenhum agendamento ativo.", "anexos": []}
+    return None
 def _referencia_anexo(chat_id: int, update_id: int, anexo: dict | None) -> list[dict]:
     """Monta uma referencia curta para anexos salvos no banco."""
     return [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo.get("nome", "anexo.bin"), "mimetype": anexo.get("mimetype", "application/octet-stream"), "banco_sqlite": str(ARQUIVO_DB)}]
@@ -173,8 +209,13 @@ def _responder_mensagem(token: str, mensagem: dict, update_id: int) -> None:
         enviar_texto(token, chat_id, "Envie texto, imagem ou arquivo.")
         return registrar("ignorado_sem_conteudo", chat_id)
     registrar_interacao(chat_id, "humano", texto, anexo["anexo_b64"] if anexo else "", anexo["mimetype"] if anexo else "", anexo["nome"] if anexo else "", update_id, "recebida")
+    if resposta_local := _resposta_local_cron(chat_id, texto):
+        texto_resposta, anexo_resposta = _enviar_resposta(token, chat_id, resposta_local)
+        registrar_interacao(chat_id, "agente", texto_resposta, anexo_resposta["anexo_b64"] if anexo_resposta else "", anexo_resposta["mimetype"] if anexo_resposta else "", anexo_resposta["nome"] if anexo_resposta else "", update_id, "respondida")
+        return registrar("resposta_local_cron", chat_id)
     registrar("codex_exec_inicio", chat_id)
     resposta, _ = _rodar_instancia(chat_id, texto, ao_aguardar=lambda: _acao_digitando(token, chat_id), referencias_anexos=_referencia_anexo(chat_id, update_id, anexo))
+    resposta = _aplicar_crons(chat_id, resposta)
     texto_resposta, anexo_resposta = _enviar_resposta(token, chat_id, resposta)
     registrar_interacao(chat_id, "agente", texto_resposta, anexo_resposta["anexo_b64"] if anexo_resposta else "", anexo_resposta["mimetype"] if anexo_resposta else "", anexo_resposta["nome"] if anexo_resposta else "", update_id, "respondida")
     registrar("resposta_enviada", chat_id)
@@ -217,23 +258,43 @@ def _sincronizar_crons() -> None:
 def _deve_notificar(cron: dict, status: str) -> bool:
     """Decide se o cron deve fazer callback para o Telegram."""
     return bool(cron["chat_callback_id"]) and (cron["callback_quando"] == "sempre" or (cron["callback_quando"] == "erro" and status != "ok"))
+def _cron_deve_abortar(cron_id: int) -> bool:
+    """Interrompe quando o cron foi removido ou recebeu pedido de aborto."""
+    cron = obter_cron(cron_id)
+    return not cron or bool(cron["abortar"])
+def _cron_foi_removido(cron_id: int) -> bool:
+    """Informa se o cron nao existe mais no banco."""
+    return obter_cron(cron_id) is None
 def _notificar_cron(token: str, cron: dict, resposta: dict[str, object], status: str) -> None:
     """Envia callback do cron ao Telegram quando configurado."""
     if not token or not _deve_notificar(cron, status):
         return
     texto = str(resposta.get("texto", "")).strip()
-    corpo = {"texto": f'Cron #{cron["id"]} "{cron["nome"]}" {status}.\n\n{texto}'.strip(), "anexos": resposta.get("anexos", []) if status == "ok" else []}
+    corpo = {"texto": texto if status == "ok" else f'Cron #{cron["id"]} "{cron["nome"]}" {status}.\n\n{texto}'.strip(), "anexos": resposta.get("anexos", []) if status == "ok" else []}
     _enviar_resposta(token, int(cron["chat_callback_id"]), corpo)
 def _executar_cron(cron: dict, token: str) -> None:
     """Executa um cron vencido como instancia BrazuClaw."""
     cron_id, sessao_id = int(cron["id"]), -int(cron["id"])
-    prompt = f'[cron "{cron["nome"]}"]\n{cron["prompt"]}'.strip()
+    cron_atual = obter_cron(cron_id)
+    if not cron_atual or not int(cron_atual["ativo"]):
+        registrar("cron_ignorado_removido", sessao_id)
+        return
+    cron = dict(cron_atual)
+    prompt = str(cron["prompt"]).strip()
     atualizar_cron(cron_id, ultima_execucao_em=int(time.time()), ultimo_status="executando", abortar=0, pid_atual=-1)
     registrar_interacao(sessao_id, "humano", prompt, status="recebida")
-    resposta, status = _rodar_instancia(sessao_id, prompt, timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: atualizar_cron(cron_id, pid_atual=pid), deve_abortar=lambda: bool((obter_cron(cron_id) or {"abortar": 0})["abortar"]))
+    prompt_codex = montar_prompt_cron(carregar_alma(), montar_contexto(sessao_id), str(cron["nome"]), prompt)
+    try:
+        resposta, status = interpretar_resposta_codex(executar_codex_monitorado(prompt_codex, ao_iniciar=lambda pid: atualizar_cron(cron_id, pid_atual=pid), deve_abortar=lambda: _cron_deve_abortar(cron_id), timeout=int(cron["timeout_segundos"]))), "ok"
+    except subprocess.TimeoutExpired:
+        resposta, status = {"texto": f'O cron "{cron["nome"]}" demorou mais de {int(cron["timeout_segundos"])} segundos e foi abortado.', "anexos": []}, "timeout"
+    except Exception as erro:
+        abortado = "abortada" in str(erro).lower()
+        resposta, status = ({"texto": "Execucao cancelada porque o cron foi removido." if abortado and _cron_foi_removido(cron_id) else ("Execucao abortada pelo usuario." if abortado else f"Falha ao consultar o Codex: {erro}"), "anexos": []}, ("removido" if abortado and _cron_foi_removido(cron_id) else ("abortado" if abortado else "erro")))
     _registrar_saida(sessao_id, resposta)
-    atualizar_cron(cron_id, ultimo_status=status, pid_atual=0, abortar=0, proximo_em=_proximo_schedule(cron["schedule"]) if cron["ativo"] else 0, ultima_execucao_em=int(time.time()))
-    _notificar_cron(token, cron, resposta, status)
+    if cron_final := obter_cron(cron_id):
+        atualizar_cron(cron_id, ultimo_status=status, pid_atual=0, abortar=0, proximo_em=_proximo_schedule(cron["schedule"]) if cron_final["ativo"] else 0, ultima_execucao_em=int(time.time()))
+        _notificar_cron(token, dict(cron_final), resposta, status)
     registrar(f"cron_{status}", sessao_id)
 def rodar_bot() -> int:
     """Executa o loop de polling do Telegram e do scheduler."""
