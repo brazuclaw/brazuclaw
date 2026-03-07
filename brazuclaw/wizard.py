@@ -1,27 +1,22 @@
 """Wizard interativo de onboarding."""
 from __future__ import annotations
-import platform
-import re
-import shutil
-import subprocess
-import sys
+import platform, re, shutil, subprocess, sys
 from importlib import resources
 from brazuclaw.codex_runner import codex_esta_autenticado
 from brazuclaw.config import ARQUIVO_ALMA, garantir_estrutura, obter_configuracao, salvar_chave
 from brazuclaw.telegram_api import validar_token
+
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
+
 def _perguntar(texto: str) -> str:
     """Le uma resposta simples do terminal."""
     return input(texto).strip()
-
-
 def _confirmar(texto: str) -> bool:
     """Solicita confirmacao do usuario."""
     return _perguntar(texto + " [s/N]: ").lower() == "s"
 def _descobrir_so() -> tuple[str, str]:
     """Detecta o sistema operacional atual."""
-    sistema = platform.system().lower()
-    release = platform.release().lower()
+    sistema, release = platform.system().lower(), platform.release().lower()
     if sistema == "linux" and "microsoft" in release:
         return "wsl", "WSL"
     if sistema == "linux":
@@ -33,11 +28,7 @@ def _descobrir_so() -> tuple[str, str]:
     return sistema, platform.system()
 def _comando_instalacao_node(chave_so: str) -> str:
     """Retorna um comando sugerido para instalar Node.js."""
-    if chave_so in ("linux", "wsl"):
-        return "sudo apt-get update && sudo apt-get install -y nodejs npm"
-    if chave_so == "macos":
-        return "brew install node"
-    return ""
+    return "sudo apt-get update && sudo apt-get install -y nodejs npm" if chave_so in ("linux", "wsl") else ("brew install node" if chave_so == "macos" else "")
 def _versao_maior(comando: list[str]) -> int:
     """Le a versao principal de um comando como inteiro."""
     try:
@@ -51,8 +42,7 @@ def _executar_comando(comando: str, env: dict[str, str] | None = None) -> bool:
     return subprocess.run(["bash", "-lc", comando], env=env).returncode == 0
 def _codex_login() -> None:
     """Abre o fluxo de login do Codex CLI via device auth."""
-    caminho = shutil.which("codex")
-    if not caminho:
+    if not (caminho := shutil.which("codex")):
         raise SystemExit("Codex CLI nao encontrado no PATH.")
     if subprocess.run([caminho, "login", "--device-auth"]).returncode != 0:
         raise SystemExit("Falha ao iniciar `codex login --device-auth`.")
@@ -90,8 +80,7 @@ def _etapa_python() -> None:
         raise SystemExit(1)
 def _etapa_node(chave_so: str) -> None:
     """Verifica e opcionalmente instala Node.js."""
-    versao = _versao_maior(["node", "--version"])
-    if versao >= 18:
+    if (versao := _versao_maior(["node", "--version"])) >= 18:
         print(f"Node.js detectado: v{versao}")
         return
     comando = _comando_instalacao_node(chave_so)
@@ -99,30 +88,21 @@ def _etapa_node(chave_so: str) -> None:
     if not comando:
         raise SystemExit("Instale Node.js 18+ manualmente e rode o wizard novamente.")
     print(f"Comando sugerido: {comando}")
-    if not _confirmar("Executar este comando agora?"):
-        raise SystemExit(1)
-    if not _executar_comando(comando):
-        raise SystemExit("Falha ao instalar Node.js.")
-    if _versao_maior(["node", "--version"]) < 18:
-        raise SystemExit("Node.js ainda nao esta disponivel ou esta abaixo da versao 18.")
+    if not _confirmar("Executar este comando agora?") or not _executar_comando(comando) or _versao_maior(["node", "--version"]) < 18:
+        raise SystemExit("Falha ao instalar Node.js 18+.")
 def _etapa_codex() -> None:
     """Verifica e opcionalmente instala o Codex CLI."""
     if shutil.which("codex"):
         print("Codex CLI detectado.")
         return
     print("Codex CLI nao encontrado.")
-    if not _confirmar("Instalar com npm install -g @openai/codex?"):
-        raise SystemExit(1)
-    if not _executar_comando("npm install -g @openai/codex"):
+    if not _confirmar("Instalar com npm install -g @openai/codex?") or not _executar_comando("npm install -g @openai/codex") or not shutil.which("codex"):
         raise SystemExit("Falha ao instalar o Codex CLI.")
-    if not shutil.which("codex"):
-        raise SystemExit("Codex CLI continua indisponivel no PATH.")
 def _etapa_openai() -> None:
     """Garante autenticacao do Codex CLI via OAuth."""
     print("Verificando autenticacao do Codex CLI...")
     if codex_esta_autenticado():
-        print("Codex CLI autenticado com sucesso.")
-        return
+        return print("Codex CLI autenticado com sucesso.")
     print("Sessao do Codex nao esta ativa.")
     print("O BrazuClaw usa login OAuth do Codex CLI.")
     print("Se esta em maquina remota ou headless, use o fluxo por device auth.")
@@ -143,17 +123,13 @@ def _etapa_telegram() -> None:
     def validar(token: str) -> str:
         if not PADRAO_TOKEN.match(token):
             raise RuntimeError("formato de token invalido")
-        bot = validar_token(token)
-        return bot.get("username", "sem_username")
-    username = _configurar_chave("BRAZUCLAW_TOKEN", "Cole o token do bot: ", validar, "Token invalido")
-    print(f"Token validado. Bot: @{username}")
+        return validar_token(token).get("username", "sem_username")
+    print(f'Token validado. Bot: @{_configurar_chave("BRAZUCLAW_TOKEN", "Cole o token do bot: ", validar, "Token invalido")}')
 def _etapa_personalidade() -> None:
     """Cria o arquivo ALMA.md se estiver ausente."""
     if ARQUIVO_ALMA.exists():
-        print(f"Arquivo ALMA existente: {ARQUIVO_ALMA}")
-        return
-    texto = resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8")
-    ARQUIVO_ALMA.write_text(texto, encoding="utf-8")
+        return print(f"Arquivo ALMA existente: {ARQUIVO_ALMA}")
+    ARQUIVO_ALMA.write_text(resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8"), encoding="utf-8")
     print(f"Arquivo ALMA criado em: {ARQUIVO_ALMA}")
 def _etapa_teste_final() -> None:
     """Faz um teste simples do Codex CLI e orienta o teste manual no Telegram."""
@@ -174,20 +150,12 @@ def _etapa_resumo(chave_so: str) -> None:
     print(f"- Codex CLI: {'ok' if shutil.which('codex') else 'pendente'}")
     print(f"- Token Telegram: {'ok' if config.get('BRAZUCLAW_TOKEN') else 'pendente'}")
     print(f"- ALMA: {ARQUIVO_ALMA}")
-    print("- Fase 2 anotada: cron, banco de dados e logs dedicados")
     print("Para iniciar o bot: brazuclaw")
 def executar_wizard() -> int:
     """Executa o wizard completo."""
     garantir_estrutura()
     chave_so = _etapa_so()
-    _etapa_python()
-    _etapa_node(chave_so)
-    _etapa_codex()
-    _etapa_openai()
-    _etapa_telegram()
-    _etapa_personalidade()
-    _etapa_teste_final()
-    _etapa_resumo(chave_so)
+    _etapa_python(), _etapa_node(chave_so), _etapa_codex(), _etapa_openai(), _etapa_telegram(), _etapa_personalidade(), _etapa_teste_final(), _etapa_resumo(chave_so)
     return 0
 def cli() -> int:
     """Ponto de entrada do comando brazuclaw-setup."""
