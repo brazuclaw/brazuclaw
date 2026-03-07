@@ -393,8 +393,13 @@ def parar() -> int:
     if not (pid := ler_pid()): print("BrazuClaw nao esta em execucao."); return 0
     try: os.kill(pid, signal.SIGTERM)
     except ProcessLookupError: ARQ["pid"].unlink(missing_ok=True); return 0
-    for _ in range(30):
+    for _ in range(50):
         if not pid_ativo(pid): ARQ["pid"].unlink(missing_ok=True); print("BrazuClaw foi encerrado."); return 0
+        time.sleep(0.2)
+    try: os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError: ARQ["pid"].unlink(missing_ok=True); return 0
+    for _ in range(10):
+        if not pid_ativo(pid): ARQ["pid"].unlink(missing_ok=True); print("BrazuClaw foi encerrado (forcado)."); return 0
         time.sleep(0.2)
     print(f"Nao foi possivel confirmar o encerramento do PID {pid}."); return 1
 
