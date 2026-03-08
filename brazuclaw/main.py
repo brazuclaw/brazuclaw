@@ -247,7 +247,7 @@ def enviar(token: str, chat_id: int, resposta: dict[str, object]) -> tuple[str, 
         try:
             tg(token, "sendPhoto" if campo == "photo" else "sendDocument", {"chat_id": str(chat_id), **({"caption": "Anexo gerado pelo BrazuClaw."} if not texto and not i else {})}, 80, {campo: (a.get("nome", "anexo.bin"), (lambda b: base64.b64decode(b + "=" * (-len(b) % 4)))(str(a.get("anexo_b64", ""))), a.get("mimetype", "application/octet-stream"))}); primeiro = primeiro or a
         except Exception as erro_envio: logar(f"erro_envio_anexo={erro_envio}", chat_id); tg(token, "sendMessage", {"chat_id": chat_id, "text": f"Falha ao enviar anexo '{a.get('nome', 'anexo')}': {erro_envio}"})
-    if not texto and not primeiro: texto = "Sem resposta do provedor de IA."; tg(token, "sendMessage", {"chat_id": chat_id, "text": texto})
+    if not texto and not primeiro: logar("resposta_vazia", chat_id)
     return texto, primeiro
 
 def aplicar_crons(chat_id: int, resposta: dict[str, object]) -> dict[str, object]:
