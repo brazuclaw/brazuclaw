@@ -19,13 +19,23 @@ PROVEDORES = {
 }
 PROVEDOR_PADRAO = "codex"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
-PADRAO_ANEXO = re.compile(r'\[anexo nome="([^"]+)" mimetype="([^"]+)"\]\s*(.*?)\s*\[/anexo\]', re.S)
+PADRAO_ANEXO = re.compile(r'\[anexo([^\]]+)\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
 
 def garantir_estrutura() -> None:
-    """Cria a estrutura minima em ~/.brazuclaw."""
+    """Cria a estrutura minima em ~/.brazuclaw e copia skills padrao se ausentes."""
     for pasta in (BASE, ARQ["db"].parent, ARQ["log"].parent): pasta.mkdir(parents=True, exist_ok=True)
     ARQ["config"].touch(exist_ok=True)
+    pkg_skills = resources.files("brazuclaw").joinpath("skills")
+    for arq in pkg_skills.iterdir():
+        destino = BASE / "skills" / arq.name
+        if arq.is_dir():
+            destino.mkdir(parents=True, exist_ok=True)
+            for sub in arq.iterdir():
+                dest_sub = destino / sub.name
+                if not dest_sub.exists(): dest_sub.write_text(sub.read_text(encoding="utf-8"), encoding="utf-8")
+        elif not destino.exists():
+            destino.parent.mkdir(parents=True, exist_ok=True); destino.write_text(arq.read_text(encoding="utf-8"), encoding="utf-8")
 
 def config(so_local: bool = False) -> dict[str, str]:
     """Le config.env e aplica prioridade do ambiente."""
@@ -118,20 +128,19 @@ def carregar_alma() -> str:
     if not ARQ["alma"].exists(): ARQ["alma"].write_text(resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8"), encoding="utf-8")
     return ARQ["alma"].read_text(encoding="utf-8").strip()
 
-def executar_ia(prompt: str, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "", provedor_nome: str = "codex") -> str:
-    """Executa o provedor de IA com timeout e aborto cooperativo."""
+def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "", provedor_nome: str = "codex") -> str:
+    """Executa o provedor de IA sem timeout, com aborto cooperativo."""
     prov = PROVEDORES.get(provedor_nome, PROVEDORES[PROVEDOR_PADRAO])
     binario = shutil.which(prov["binario"]) or ""
     if not binario: raise RuntimeError(f'{prov["binario"]} nao encontrado no PATH.')
     flag_mod = [prov["flag_modelo"], modelo_nome] if modelo_nome else []
     cmd = [binario, *(flag_mod if prov.get("modelo_antes") else []), *prov["args_base"], *([] if prov.get("modelo_antes") else flag_mod), prompt]
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy())
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy(), cwd=str(Path.home()))
     if ao_iniciar: ao_iniciar(p.pid)
-    inicio = prox = time.monotonic()
+    prox = time.monotonic()
     try:
         while p.poll() is None:
-            if time.monotonic() - inicio >= timeout: p.kill(); p.wait(); raise subprocess.TimeoutExpired(p.args, timeout)
             if deve_abortar and deve_abortar(): p.kill(); p.wait(); raise RuntimeError("Execucao abortada.")
             if ao_aguardar and time.monotonic() >= prox: ao_aguardar(); prox = time.monotonic() + 4
             time.sleep(0.2)
@@ -185,7 +194,12 @@ def interpretar(texto: str) -> dict[str, object]:
     for attrs, corpo in PADRAO_CRON.findall(texto):
         d = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
         if d.get("nome") and d.get("schedule") and corpo.strip(): crons.append({"nome": d["nome"][:80], "schedule": d["schedule"].strip(), "callback": (d.get("callback") or "sempre").strip(), "timeout": int(d.get("timeout") or 120), "prompt": corpo.strip()})
-    return {"texto": PADRAO_CRON.sub("", PADRAO_ANEXO.sub("", texto)).strip(), "anexos": [{"nome": n[:120], "mimetype": m[:120], "anexo_b64": "".join(c.split())} for n, m, c in PADRAO_ANEXO.findall(texto)], "crons": crons}
+    anexos = []
+    for attrs, corpo in PADRAO_ANEXO.findall(texto):
+        d = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
+        if corpo.strip(): anexos.append({"nome": d.get("nome", "anexo.bin")[:120], "mimetype": d.get("mimetype", "application/octet-stream")[:120], "anexo_b64": "".join(corpo.split())})
+    logar(f"interpretar anexos={len(anexos)}")
+    return {"texto": PADRAO_CRON.sub("", PADRAO_ANEXO.sub("", texto)).strip(), "anexos": anexos, "crons": crons}
 
 def cron_campo(campo: str, minimo: int, maximo: int) -> tuple[set[int] | None, bool]:
     """Converte um campo cron em conjunto de inteiros."""
@@ -228,7 +242,9 @@ def enviar(token: str, chat_id: int, resposta: dict[str, object]) -> tuple[str, 
     if texto: tg(token, "sendMessage", {"chat_id": chat_id, "text": texto[:4000]})
     for i, a in enumerate(resposta.get("anexos", []) if isinstance(resposta.get("anexos"), list) else []):
         campo = "photo" if str(a.get("mimetype", "")).startswith("image/") else "document"
-        tg(token, "sendPhoto" if campo == "photo" else "sendDocument", {"chat_id": str(chat_id), **({"caption": "Anexo gerado pelo BrazuClaw."} if not texto and not i else {})}, 80, {campo: (a.get("nome", "anexo.bin"), base64.b64decode(str(a.get("anexo_b64", "")).encode("ascii")), a.get("mimetype", "application/octet-stream"))}); primeiro = primeiro or a
+        try:
+            tg(token, "sendPhoto" if campo == "photo" else "sendDocument", {"chat_id": str(chat_id), **({"caption": "Anexo gerado pelo BrazuClaw."} if not texto and not i else {})}, 80, {campo: (a.get("nome", "anexo.bin"), (lambda b: base64.b64decode(b + "=" * (-len(b) % 4)))(str(a.get("anexo_b64", ""))), a.get("mimetype", "application/octet-stream"))}); primeiro = primeiro or a
+        except Exception as erro_envio: logar(f"erro_envio_anexo={erro_envio}", chat_id); tg(token, "sendMessage", {"chat_id": chat_id, "text": f"Falha ao enviar anexo '{a.get('nome', 'anexo')}': {erro_envio}"})
     if not texto and not primeiro: texto = "Sem resposta do provedor de IA."; tg(token, "sendMessage", {"chat_id": chat_id, "text": texto})
     return texto, primeiro
 
@@ -268,11 +284,16 @@ def extrair_anexo(token: str, msg: dict) -> dict | None:
     if len(conteudo) > LIMITE_ANEXO: raise ValueError(f"Anexo acima do limite de {LIMITE_ANEXO // 1024} KB.")
     return {"nome": ("imagem.jpg" if msg.get("photo") else item.get("file_name", "arquivo.bin"))[:120], "mimetype": (msg.get("document") or {}).get("mime_type", tipo), "anexo_b64": base64.b64encode(conteudo).decode("ascii")}
 
-def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, timeout: int = 120, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex") -> tuple[dict[str, object], str]:
+def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex") -> tuple[dict[str, object], str]:
     """Monta prompt, chama provedor de IA e interpreta retorno."""
-    try: return interpretar(executar_ia(montar_prompt(chat_id, texto, refs, nome_cron), timeout, ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)), "ok"
-    except subprocess.TimeoutExpired: return {"texto": f"O provedor demorou mais de {timeout} segundos e a execucao foi abortada.", "anexos": []}, "timeout"
-    except Exception as erro: return {"texto": "Execucao abortada pelo usuario." if "abortada" in str(erro).lower() else f"Falha ao consultar o provedor: {erro}", "anexos": []}, ("abortado" if "abortada" in str(erro).lower() else "erro")
+    try:
+        saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)
+        logar(f"raw_ia={saida[:300].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
+        return interpretar(saida), "ok"
+    except Exception as erro:
+        abortado = "abortada" in str(erro).lower()
+        logar(f"{'abortado' if abortado else 'erro_ia'}={erro}", chat_id if chat_id >= 0 else None)
+        return {"texto": "Execucao abortada pelo usuario." if abortado else f"Falha ao consultar o provedor: {erro}", "anexos": []}, ("abortado" if abortado else "erro")
 
 def processar_mensagem(token: str, update: dict) -> None:
     """Processa uma unica mensagem do Telegram."""
@@ -287,9 +308,12 @@ def processar_mensagem(token: str, update: dict) -> None:
     if local := cron_local(chat_id, texto):
         txt, ax = enviar(token, chat_id, local); registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); return logar("resposta_local_cron", chat_id)
     refs = [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo["nome"], "mimetype": anexo["mimetype"]}]
-    resp, _ = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"), provedor_nome=provedor("bot"))
+    inicio = time.monotonic(); logar(f"processando prov={provedor('bot')} model={modelo('bot') or 'padrao'} anexo={'sim' if anexo else 'nao'}", chat_id)
+    resp, status = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"), provedor_nome=provedor("bot"))
+    if status == "erro": logar(f"erro_resposta={resp.get('texto', '')[:200]}", chat_id)
     txt, ax = enviar(token, chat_id, aplicar_crons(chat_id, resp))
-    registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); logar("resposta_enviada", chat_id)
+    logar(f"resposta_enviada tempo={int(time.monotonic()-inicio)}s", chat_id)
+    registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id)
 
 def abortar_cron(cron_id: int) -> bool:
     """Retorna True quando o cron precisa abortar."""
@@ -305,7 +329,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     atual = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
-    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), timeout=int(cron["timeout_segundos"]), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
+    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
