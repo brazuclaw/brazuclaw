@@ -157,7 +157,7 @@ def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=Non
         for marca in ("usage limit", "limit", "upgrade", "credits"):
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
         raise RuntimeError(erros.split("\n")[-1] if erros else f'Falha ao executar {prov["binario"]}.')
-    return saida or "Sem resposta do provedor de IA."
+    return saida
 
 def provedor_ok(nome: str = "") -> bool:
     """Confirma se o provedor de IA esta disponivel e autenticado."""
