@@ -186,7 +186,8 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     if hist := contexto(chat_id): partes.append("Contexto recente:\n" + hist)
     partes.append((f'Execucao automatica do cron "{nome_cron}". Nao crie novos blocos [cron].\n\nInstrucao agendada:\n' if nome_cron else "Mensagem atual do usuario:\n") + (texto.strip() or "(sem texto)"))
     if refs: partes.append("Referencias de anexos da mensagem atual salvos no SQLite:\n" + "\n\n".join(f"- chat_id: {r['chat_id']}\n  update_id: {r['update_id']}\n  nome_arquivo: {r['nome']}\n  mimetype: {r['mimetype']}\n  banco_sqlite: {ARQ['db']}" for r in refs))
-    if nome_cron and chat_callback_id: partes.append(f"CLI do BrazuClaw disponivel para enviar ao Telegram (chat_id={chat_callback_id}):\n  brazuclaw tg send --chat {chat_callback_id} --text \"mensagem\"\n  brazuclaw tg send --chat {chat_callback_id} --file /caminho/arquivo\n  brazuclaw tg send --chat {chat_callback_id} --file /caminho/arquivo --text \"legenda\"\nTipos suportados: imagens (sendPhoto), audio (sendAudio), video (sendVideo), qualquer outro (sendDocument).")
+    cli_chat = chat_id if not nome_cron and chat_id > 0 else (chat_callback_id if nome_cron and chat_callback_id else 0)
+    if cli_chat: partes.append(f"CLI do BrazuClaw disponivel para enviar ao Telegram (chat_id={cli_chat}):\n  brazuclaw tg send --chat {cli_chat} --text \"mensagem\"\n  brazuclaw tg send --chat {cli_chat} --file /caminho/arquivo\n  brazuclaw tg send --chat {cli_chat} --file /caminho/arquivo --text \"legenda\"\nPREFIRA este recurso para enviar imagens, audios, videos ou qualquer arquivo gerado. Reserve o bloco [anexo] apenas quando nao for possivel salvar o arquivo em disco.")
     return "\n\n".join(partes)
 
 def interpretar(texto: str) -> dict[str, object]:
@@ -289,7 +290,8 @@ def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_agua
     """Monta prompt, chama provedor de IA e interpreta retorno."""
     try:
         saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)
-        logar(f"raw_ia={saida[:300].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
+        logar(f"raw_ia_ini={saida[:200].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
+        logar(f"raw_ia_fim={saida[-200:].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
         return interpretar(saida), "ok"
     except Exception as erro:
         abortado = "abortada" in str(erro).lower()
