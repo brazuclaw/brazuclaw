@@ -1,6 +1,6 @@
 """CLI, wizard, bot Telegram e cron do BrazuClaw."""
 from __future__ import annotations
-import base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
+import asyncio, base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
 from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
@@ -12,6 +12,8 @@ LIMITE_TEXTO, LIMITE_ANEXO, CONTEXTO = 1000, 256 * 1024, 10
 MODELO_BOT_PADRAO, MODELO_TASK_PADRAO = "", ""
 MODELOS_GEMINI = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
 MODELO_GEMINI_PADRAO = MODELOS_GEMINI[0]
+MARCAS_QUOTA_GEMINI = ("exhausted", "quota", "terminalquotaerror", "unexpected critical error")
+_override_modelo: dict[str, str] = {}  # fallback de sessao; resetado a cada reinicio
 PROVEDORES = {
     "codex":  {"binario": "codex",  "args_base": ["exec", "--yolo"], "flag_modelo": "-m",      "modelo_antes": False, "requer_node": True},
     "claude": {"binario": "claude", "args_base": ["-p"],             "flag_modelo": "--model",  "modelo_antes": True,  "requer_node": False},
@@ -64,7 +66,7 @@ def banco(sql: str, args: tuple = (), um: bool = False, varios: bool = False):
     """Executa SQL simples no banco local."""
     garantir_estrutura()
     with sqlite3.connect(ARQ["db"]) as con:
-        con.row_factory = sqlite3.Row; cur = con.execute(sql, args)
+        con.execute("PRAGMA journal_mode=WAL"); con.row_factory = sqlite3.Row; cur = con.execute(sql, args)
         return cur.fetchone() if um else cur.fetchall() if varios else cur.lastrowid
 
 def preparar_banco() -> None:
@@ -110,7 +112,8 @@ def baixar_anexo(token: str, file_id: str) -> tuple[str, bytes]:
     return mimetypes.guess_type(caminho.rsplit("/", 1)[-1])[0] or "application/octet-stream", r.content
 
 def modelo(tipo: str = "bot") -> str:
-    """Retorna o modelo configurado para bot ou task."""
+    """Retorna o modelo configurado para bot ou task, respeitando override de sessao."""
+    if tipo in _override_modelo: return _override_modelo[tipo]
     chave = "BRAZUCLAW_MODEL_BOT" if tipo == "bot" else "BRAZUCLAW_MODEL_TASK"
     m = config().get(chave) or (MODELO_BOT_PADRAO if tipo == "bot" else MODELO_TASK_PADRAO)
     if not m and provedor(tipo) == "gemini": return MODELO_GEMINI_PADRAO
@@ -151,6 +154,7 @@ def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=Non
             _filtro = ("Loaded cached credentials.", "YOLO mode is enabled.")
             saida = "\n".join(l for l in saida.splitlines() if not any(f in l for f in _filtro)).strip()
             erros = "\n".join(l for l in erros.splitlines() if not any(f in l for f in _filtro)).strip()
+            if any(mk in (saida + " " + erros).lower() for mk in MARCAS_QUOTA_GEMINI): raise RuntimeError("quota_gemini")
     finally:
         if p.poll() is None: p.kill(); p.wait()
     if p.returncode and not saida:
@@ -158,6 +162,11 @@ def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=Non
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
         raise RuntimeError(erros.split("\n")[-1] if erros else f'Falha ao executar {prov["binario"]}.')
     return saida
+
+def fallback_gemini(m: str) -> str:
+    """Retorna o proximo modelo flash como fallback quando a cota pro esta esgotada."""
+    flash = [x for x in MODELOS_GEMINI if "flash" in x and x != m]
+    return flash[0] if flash else "gemini-2.5-flash"
 
 def provedor_ok(nome: str = "") -> bool:
     """Confirma se o provedor de IA esta disponivel e autenticado."""
@@ -294,6 +303,15 @@ def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_agua
         logar(f"raw_ia_fim={saida[-200:].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
         return interpretar(saida), "ok"
     except Exception as erro:
+        if str(erro) == "quota_gemini" and provedor_nome == "gemini":
+            novo = fallback_gemini(modelo_nome)
+            logar(f"quota_gemini_fallback={novo}", chat_id if chat_id >= 0 else None)
+            _override_modelo["bot"] = novo; _override_modelo["task"] = novo
+            try:
+                saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, novo, provedor_nome)
+                logar(f"raw_ia_ini={saida[:200].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None); logar(f"raw_ia_fim={saida[-200:].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
+                return interpretar(saida), "ok"
+            except Exception as erro: pass
         abortado = "abortada" in str(erro).lower()
         logar(f"{'abortado' if abortado else 'erro_ia'}={erro}", chat_id if chat_id >= 0 else None)
         return {"texto": "Execucao abortada pelo usuario." if abortado else f"Falha ao consultar o provedor: {erro}", "anexos": []}, ("abortado" if abortado else "erro")
@@ -342,10 +360,6 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
             enviar(token, int(final["chat_callback_id"]), {"texto": str(resp.get("texto", "")) if status == "ok" else f'Cron #{cron_id} "{final["nome"]}" {status}.\n\n{resp.get("texto", "")}'.strip(), "anexos": resp.get("anexos", []) if status == "ok" else []})
     logar(f"cron_{status}", sessao)
 
-def encerrar(_sig: int, _frame: object) -> None:
-    """Encerra o daemon imediatamente via SystemExit."""
-    raise SystemExit(0)
-
 def daemonizar() -> None:
     """Desacopla o processo atual do terminal."""
     if os.name != "posix": raise SystemExit("Modo daemon exige POSIX.")
@@ -356,29 +370,33 @@ def daemonizar() -> None:
     with open(os.devnull, "r", encoding="utf-8") as entrada, ARQ["log"].open("a", encoding="utf-8") as saida:
         os.dup2(entrada.fileno(), 0); os.dup2(saida.fileno(), 1); os.dup2(saida.fileno(), 2)
 
-def rodar_bot() -> int:
-    """Executa long polling do Telegram e o scheduler local."""
+async def rodar_bot() -> int:
+    """Executa long polling do Telegram e o scheduler local de forma assincrona."""
     preparar_banco(); token = config().get("BRAZUCLAW_TOKEN")
-    if not token:
-        logar("erro_token_ausente"); return 1
+    if not token: logar("erro_token_ausente"); return 1
     try: validar_token(token)
-    except Exception as erro:
-        logar(f"erro_token_invalido={erro}"); return 1
-    signal.signal(signal.SIGINT, encerrar); signal.signal(signal.SIGTERM, encerrar)
+    except Exception as erro: logar(f"erro_token_invalido={erro}"); return 1
+    parar = asyncio.Event(); loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try: loop.add_signal_handler(sig, parar.set)
+        except NotImplementedError: signal.signal(sig, lambda *_: parar.set())
     banco("UPDATE crons SET pid_atual = 0, abortar = 0")
     for c in banco("SELECT id, schedule, ativo FROM crons", varios=True): banco("UPDATE crons SET proximo_em = ? WHERE id = ?", (cron_proximo(str(c["schedule"]), int(time.time()) - 60) if int(c["ativo"]) else 0, c["id"]))
     offset = int(estado("telegram_offset") or "0") or None; logar("bot_iniciado")
+    tarefas: set[asyncio.Task] = set()
     try:
-        while True:
+        while not parar.is_set():
             try:
-                if cron := banco("SELECT * FROM crons WHERE ativo = 1 AND pid_atual = 0 AND proximo_em > 0 AND proximo_em <= ? ORDER BY proximo_em, id LIMIT 1", (int(time.time()),), um=True): executar_cron(cron, token); continue
-                for update in tg(token, "getUpdates", {"timeout": 30, "allowed_updates": ["message"], **({"offset": offset} if offset else {})}, 40):
+                if cron := banco("SELECT * FROM crons WHERE ativo = 1 AND pid_atual = 0 AND proximo_em > 0 AND proximo_em <= ? ORDER BY proximo_em, id LIMIT 1", (int(time.time()),), um=True):
+                    t = asyncio.create_task(asyncio.to_thread(executar_cron, cron, token)); tarefas.add(t); t.add_done_callback(tarefas.discard)
+                for update in await asyncio.to_thread(tg, token, "getUpdates", {"timeout": 30, "allowed_updates": ["message"], **({"offset": offset} if offset else {})}, 40):
                     offset = update["update_id"] + 1
-                    if update.get("message") and not banco("SELECT 1 FROM mensagens WHERE update_id = ? AND ator = 'agente' AND status = 'respondida' LIMIT 1", (update["update_id"],), um=True): processar_mensagem(token, update)
+                    if update.get("message") and not banco("SELECT 1 FROM mensagens WHERE update_id = ? AND ator = 'agente' AND status = 'respondida' LIMIT 1", (update["update_id"],), um=True):
+                        await asyncio.to_thread(processar_mensagem, token, update)
                     estado("telegram_offset", str(offset))
-            except KeyboardInterrupt: break
-            except Exception as erro: logar(f"erro_polling={erro}"); time.sleep(2)
+            except Exception as erro: logar(f"erro_polling={erro}"); await asyncio.sleep(2)
     finally:
+        if tarefas: await asyncio.gather(*tarefas, return_exceptions=True)
         ARQ["pid"].unlink(missing_ok=True); logar("bot_encerrado")
     return 0
 
@@ -494,7 +512,7 @@ def iniciar() -> int:
     matar_instancias_orfas()
     if pid := ler_pid(): print(f"BrazuClaw ja esta em execucao no PID {pid}."); return 0
     garantir_estrutura(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8")
-    print("servico BrazuClaw iniciado"); daemonizar(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8"); return rodar_bot()
+    print("servico BrazuClaw iniciado"); daemonizar(); ARQ["pid"].write_text(f"{os.getpid()}\n", encoding="utf-8"); return asyncio.run(rodar_bot())
 
 def parar() -> int:
     """Encerra o daemon se estiver ativo."""
