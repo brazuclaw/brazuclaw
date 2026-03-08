@@ -174,7 +174,7 @@ def provedor_ok(nome: str = "") -> bool:
     try: return bool(executar_ia("Responda apenas: teste ok", 30, provedor_nome=nome))
     except Exception: return False
 
-def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome_cron: str = "") -> str:
+def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome_cron: str = "", chat_callback_id: int = 0) -> str:
     """Monta o prompt do provedor de IA com ALMA, memoria e anexos."""
     partes = [
         "Responda em texto simples.",
@@ -186,6 +186,7 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     if hist := contexto(chat_id): partes.append("Contexto recente:\n" + hist)
     partes.append((f'Execucao automatica do cron "{nome_cron}". Nao crie novos blocos [cron].\n\nInstrucao agendada:\n' if nome_cron else "Mensagem atual do usuario:\n") + (texto.strip() or "(sem texto)"))
     if refs: partes.append("Referencias de anexos da mensagem atual salvos no SQLite:\n" + "\n\n".join(f"- chat_id: {r['chat_id']}\n  update_id: {r['update_id']}\n  nome_arquivo: {r['nome']}\n  mimetype: {r['mimetype']}\n  banco_sqlite: {ARQ['db']}" for r in refs))
+    if nome_cron and chat_callback_id: partes.append(f"CLI do BrazuClaw disponivel para enviar ao Telegram (chat_id={chat_callback_id}):\n  brazuclaw tg send --chat {chat_callback_id} --text \"mensagem\"\n  brazuclaw tg send --chat {chat_callback_id} --file /caminho/arquivo\n  brazuclaw tg send --chat {chat_callback_id} --file /caminho/arquivo --text \"legenda\"\nTipos suportados: imagens (sendPhoto), audio (sendAudio), video (sendVideo), qualquer outro (sendDocument).")
     return "\n\n".join(partes)
 
 def interpretar(texto: str) -> dict[str, object]:
@@ -284,10 +285,10 @@ def extrair_anexo(token: str, msg: dict) -> dict | None:
     if len(conteudo) > LIMITE_ANEXO: raise ValueError(f"Anexo acima do limite de {LIMITE_ANEXO // 1024} KB.")
     return {"nome": ("imagem.jpg" if msg.get("photo") else item.get("file_name", "arquivo.bin"))[:120], "mimetype": (msg.get("document") or {}).get("mime_type", tipo), "anexo_b64": base64.b64encode(conteudo).decode("ascii")}
 
-def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex") -> tuple[dict[str, object], str]:
+def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex", chat_callback_id: int = 0) -> tuple[dict[str, object], str]:
     """Monta prompt, chama provedor de IA e interpreta retorno."""
     try:
-        saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)
+        saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)
         logar(f"raw_ia={saida[:300].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
         return interpretar(saida), "ok"
     except Exception as erro:
@@ -329,7 +330,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     atual = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
-    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
+    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"), chat_callback_id=int(cron["chat_callback_id"]))
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
@@ -508,6 +509,28 @@ def parar() -> int:
         time.sleep(0.2)
     print(f"Nao foi possivel confirmar o encerramento do PID {pid}."); return 1
 
+def cli_tg(args: list[str]) -> int:
+    """Envia mensagem ou arquivo ao Telegram via CLI."""
+    livres, flags = parsear_flags(args)
+    if not livres or livres[0] != "send": raise SystemExit("Uso: brazuclaw tg send --chat ID [--text TEXTO] [--file CAMINHO]")
+    token = config().get("BRAZUCLAW_TOKEN")
+    if not token: raise SystemExit("Token nao configurado. Execute brazuclaw setup.")
+    chat_id = flags.get("chat")
+    if not chat_id: raise SystemExit("Informe --chat CHAT_ID.")
+    texto = flags.get("text", "")
+    arquivo = flags.get("file", "")
+    if not texto and not arquivo: raise SystemExit("Informe --text e/ou --file.")
+    if arquivo:
+        caminho = Path(arquivo).expanduser().resolve()
+        if not caminho.exists(): raise SystemExit(f"Arquivo nao encontrado: {arquivo}")
+        mime = mimetypes.guess_type(caminho.name)[0] or "application/octet-stream"
+        campo = "photo" if mime.startswith("image/") else "audio" if mime.startswith("audio/") else "video" if mime.startswith("video/") else "document"
+        dados: dict = {"chat_id": str(chat_id), **({"caption": texto[:1024]} if texto else {})}
+        tg(token, {"photo": "sendPhoto", "audio": "sendAudio", "video": "sendVideo", "document": "sendDocument"}[campo], dados, 120, {campo: (caminho.name, caminho.read_bytes(), mime)})
+    else:
+        tg(token, "sendMessage", {"chat_id": chat_id, "text": texto[:4000]})
+    print(f"Enviado para chat {chat_id}."); return 0
+
 def logs(args: list[str]) -> int:
     """Mostra logs recentes ou segue o arquivo."""
     n, seguir, pos = int([a for a in args if a.isdigit()][-1]) if any(a.isdigit() for a in args) else 50, any(a in ("-f", "--follow", "tail") for a in args), 0
@@ -535,7 +558,8 @@ def cli() -> int:
     if args[0] == "stop": return parar()
     if args[0] == "restart": return iniciar() if parar() == 0 else 1
     if args[0] == "logs": return logs(args[1:])
-    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider]"); return 0
+    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider|tg]"); return 0
+    if args[0] == "tg": return cli_tg(args[1:])
     if args[0] == "provider":
         if len(args) < 2 or args[1] not in ("bot", "task"): print(f"Uso: brazuclaw provider bot [provedor] | brazuclaw provider task [provedor]\nAtual: bot={provedor('bot')} task={provedor('task')}"); return 0
         tipo, chave = args[1], "BRAZUCLAW_PROVIDER_BOT" if args[1] == "bot" else "BRAZUCLAW_PROVIDER_TASK"
@@ -547,7 +571,7 @@ def cli() -> int:
         tipo, chave = args[1], "BRAZUCLAW_MODEL_BOT" if args[1] == "bot" else "BRAZUCLAW_MODEL_TASK"
         if len(args) < 3: print(f"Modelo {tipo}: {modelo(tipo)}"); return 0
         salvar_local(chave, args[2]); print(f"Modelo {tipo} atualizado para: {args[2]}"); return 0
-    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider]"); return 0
+    if args[0] != "cron": print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider|tg]"); return 0
     if len(args) < 2 or args[1] == "list":
         for c in banco("SELECT * FROM crons ORDER BY id", varios=True):
             prox = "-" if not c["proximo_em"] else datetime.fromtimestamp(c["proximo_em"]).strftime("%Y-%m-%d %H:%M")

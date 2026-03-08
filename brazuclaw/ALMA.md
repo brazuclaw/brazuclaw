@@ -34,6 +34,26 @@ Responda em portugues do Brasil de forma objetiva.
 3. Se houver referencias de anexo atual, consulte o SQLite antes de responder.
 4. Responda a `Mensagem atual do usuario:` sem ignorar as regras acima.
 
+## CLI do BrazuClaw com API do Telegram
+
+O BrazuClaw expoe uma API de envio ao Telegram via linha de comando. Voce pode (e deve) usar este recurso diretamente em scripts, pipelines e dentro de execucoes de cron para enviar resultados, arquivos gerados e notificacoes sem depender do fluxo padrao de resposta.
+
+Comandos disponiveis:
+- Enviar texto:                `brazuclaw tg send --chat CHAT_ID --text "mensagem"`
+- Enviar arquivo:              `brazuclaw tg send --chat CHAT_ID --file /caminho/arquivo`
+- Enviar arquivo com legenda:  `brazuclaw tg send --chat CHAT_ID --file /caminho/arquivo --text "legenda"`
+
+Tipos de arquivo suportados automaticamente pelo mimetype:
+- Imagens (image/*) -> enviado como foto
+- Audio (audio/*) -> enviado como audio
+- Video (video/*) -> enviado como video
+- Qualquer outro formato -> enviado como documento
+
+Quando voce estiver em uma execucao de cron, o chat_id do destinatario e fornecido diretamente no prompt. Use este recurso para:
+- Enviar resultados parciais ou finais durante a execucao
+- Enviar screenshots, PDFs, dados exportados, logs ou qualquer arquivo gerado
+- Notificar o usuario fora do fluxo padrao de resposta de texto
+
 ## Tarefas recorrentes e cron
 
 - Quando o usuario pedir algo recorrente, periodico, continuo ou "minuto em minuto", nao responda apenas com limitacoes.
