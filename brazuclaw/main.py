@@ -1,6 +1,6 @@
 """CLI, wizard, bot Telegram e cron do BrazuClaw."""
 from __future__ import annotations
-import asyncio, base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time, threading
+import asyncio, base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
 from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
@@ -64,22 +64,15 @@ def logar(status: str, chat_id: int | None = None) -> None:
     """Escreve log simples sem dados sensiveis."""
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {'chat=----' if chat_id is None else f'chat=...{str(chat_id)[-4:]}'} {status}", flush=True)
 
-_tlocal = threading.local()
+_wal_ok = False
 
 def banco(sql: str, args: tuple = (), um: bool = False, varios: bool = False):
-    """Executa SQL simples no banco local com conexao reutilizada por thread."""
-    con = getattr(_tlocal, "con", None)
-    if con is None:
-        garantir_estrutura()
-        con = sqlite3.connect(ARQ["db"], isolation_level=None, check_same_thread=False)
-        con.execute("PRAGMA journal_mode=WAL"); con.row_factory = sqlite3.Row; _tlocal.con = con
-    try:
-        cur = con.execute(sql, args)
+    """Executa SQL simples no banco local."""
+    global _wal_ok; garantir_estrutura()
+    with sqlite3.connect(ARQ["db"]) as con:
+        if not _wal_ok: con.execute("PRAGMA journal_mode=WAL"); _wal_ok = True
+        con.row_factory = sqlite3.Row; cur = con.execute(sql, args)
         return cur.fetchone() if um else cur.fetchall() if varios else cur.lastrowid
-    except sqlite3.OperationalError:
-        try: con.close()
-        except Exception: pass
-        _tlocal.con = None; return banco(sql, args, um, varios)
 
 def preparar_banco() -> None:
     """Cria as tabelas do projeto."""
