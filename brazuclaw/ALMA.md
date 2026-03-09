@@ -54,19 +54,17 @@ Quando voce estiver em uma execucao de cron, o chat_id do destinatario e forneci
 - Enviar screenshots, PDFs, dados exportados, logs ou qualquer arquivo gerado
 - Notificar o usuario fora do fluxo padrao de resposta de texto
 
-## Navegacao web com Chrome
+## Navegacao web e screenshots com Chrome
 
-- Sempre que precisar acessar um site, consultar informacoes online ou executar tarefas que envolvam navegacao, use a skill `chrome-desktop` (em `~/.brazuclaw/skills/chrome-desktop/skill.md`).
+- Para tirar screenshot de qualquer URL, use o script auxiliar:
+  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py URL [SAIDA] [--headed]`
+  O script lanca o Chrome automaticamente (headless), navega, remove modais e salva a imagem.
+  Exemplo completo com envio ao Telegram:
+  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py https://example.com /tmp/screenshot.png && brazuclaw tg send --chat CHAT_ID --file /tmp/screenshot.png`
+- Para interacoes avancadas (preencher formularios, clicar, extrair dados), consulte `~/.brazuclaw/skills/chrome-desktop/skill.md` para a referencia completa com Playwright.
 - Use o perfil dedicado do BrazuClaw em `~/.brazuclaw/chrome-profile/` para nao interferir no Chrome pessoal do usuario.
-- Lance o Chrome com `--user-data-dir=$HOME/.brazuclaw/chrome-profile/` para manter sessoes e cookies separados.
 - Quando um site bloquear acesso com bot wall, captcha, paywall ou qualquer barreira anti-bot, tente navegar pelo Chrome via CDP em vez de fazer requisicoes HTTP diretas.
-- Ao carregar qualquer pagina, remova imediatamente modais, overlays, banners de cookies e elementos que bloqueiem a visibilidade do conteudo. Use JavaScript via CDP para isso:
-  - Remova elementos com `position: fixed` ou `position: sticky` que cubram a tela
-  - Remova overlays com `z-index` alto e fundo semi-transparente
-  - Remova banners de consentimento de cookies (detecte por classes comuns: `cookie`, `consent`, `gdpr`, `modal`, `overlay`, `popup`)
-  - Restaure o scroll do body caso esteja travado (`overflow: hidden`)
-- Se a pagina continuar inacessivel apos remocao de modais, tente usar o user-agent de um navegador comum e limpar o estado antes de retentar.
-- Prefira extrair o conteudo visivel da pagina apos limpeza de modais em vez de tentar parsear HTML bruto.
+- O script de screenshot ja remove modais, overlays e banners de cookies automaticamente. Para interacoes manuais via Playwright, execute a limpeza de modais documentada na skill.
 - Ao terminar, feche apenas as abas que voce abriu; nunca feche abas pre-existentes.
 
 ## Tarefas em segundo plano

@@ -171,6 +171,7 @@ def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=Non
         for marca in ("usage limit", "limit", "upgrade", "credits"):
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
         raise RuntimeError(erros.split("\n")[-1] if erros else f'Falha ao executar {prov["binario"]}.')
+    if not saida and erros: logar(f"stderr_sem_stdout={erros[:300]}")
     return saida
 
 def fallback_gemini(m: str) -> str:
@@ -382,6 +383,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
     resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"), chat_callback_id=int(cron["chat_callback_id"]), timeout_segundos=3600)
+    cb = int(cron["chat_callback_id"]); resp = aplicar_tarefas(cb, resp) if cb else resp
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
@@ -396,6 +398,7 @@ def executar_tarefa(tarefa: sqlite3.Row, token: str) -> None:
     tid, chat_id = int(tarefa["id"]), int(tarefa["chat_id"])
     banco("UPDATE tarefas SET status = 'executando', iniciado_em = ? WHERE id = ?", (int(time.time()), tid))
     resp, status = instanciar(chat_id, str(tarefa["prompt"]).strip(), ao_iniciar=lambda pid: banco("UPDATE tarefas SET pid_atual = ? WHERE id = ?", (pid, tid)), deve_abortar=lambda: abortar_tarefa(tid), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
+    resp = aplicar_tarefas(chat_id, aplicar_crons(chat_id, resp))
     resultado = str(resp.get("texto", ""))
     banco("UPDATE tarefas SET status = ?, resultado = ?, concluido_em = ?, pid_atual = 0 WHERE id = ?", (status, resultado[:2000], int(time.time()), tid))
     if token and chat_id:
