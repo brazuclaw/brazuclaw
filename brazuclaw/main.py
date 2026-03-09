@@ -131,20 +131,27 @@ def carregar_alma() -> str:
     if not ARQ["alma"].exists(): ARQ["alma"].write_text(resources.files("brazuclaw").joinpath("ALMA.md").read_text(encoding="utf-8"), encoding="utf-8")
     return ARQ["alma"].read_text(encoding="utf-8").strip()
 
-def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "", provedor_nome: str = "codex") -> str:
-    """Executa o provedor de IA sem timeout, com aborto cooperativo."""
+def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, modelo_nome: str = "", provedor_nome: str = "codex", timeout_segundos: int = 0) -> str:
+    """Executa o provedor de IA com aborto cooperativo e timeout opcional para tasks."""
     prov = PROVEDORES.get(provedor_nome, PROVEDORES[PROVEDOR_PADRAO])
     binario = shutil.which(prov["binario"]) or ""
     if not binario: raise RuntimeError(f'{prov["binario"]} nao encontrado no PATH.')
     flag_mod = [prov["flag_modelo"], modelo_nome] if modelo_nome else []
     cmd = [binario, *(flag_mod if prov.get("modelo_antes") else []), *prov["args_base"], *([] if prov.get("modelo_antes") else flag_mod), prompt]
     if os.name == "posix" and shutil.which("nice"): cmd = ["nice", "-n", "10", *cmd]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy(), cwd=str(Path.home()))
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy(), cwd=str(Path.home()), start_new_session=True)
     if ao_iniciar: ao_iniciar(p.pid)
-    prox = time.monotonic()
+    prox = time.monotonic(); prazo = (time.monotonic() + timeout_segundos) if timeout_segundos > 0 else None
+
+    def matar_grupo():
+        try: os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except Exception: pass
+        p.wait()
+
     try:
         while p.poll() is None:
-            if deve_abortar and deve_abortar(): p.kill(); p.wait(); raise RuntimeError("Execucao abortada.")
+            if prazo and time.monotonic() >= prazo: matar_grupo(); raise RuntimeError(f"Timeout de {timeout_segundos}s atingido.")
+            if deve_abortar and deve_abortar(): matar_grupo(); raise RuntimeError("Execucao abortada.")
             if ao_aguardar and time.monotonic() >= prox: ao_aguardar(); prox = time.monotonic() + 4
             time.sleep(0.2)
         stdout, stderr = p.communicate()
@@ -156,7 +163,7 @@ def executar_ia(prompt: str, ao_aguardar=None, ao_iniciar=None, deve_abortar=Non
             erros = "\n".join(l for l in erros.splitlines() if not any(f in l for f in _filtro)).strip()
             if any(mk in (saida + " " + erros).lower() for mk in MARCAS_QUOTA_GEMINI): raise RuntimeError("quota_gemini")
     finally:
-        if p.poll() is None: p.kill(); p.wait()
+        if p.poll() is None: matar_grupo()
     if p.returncode and not saida:
         for marca in ("usage limit", "limit", "upgrade", "credits"):
             if marca in erros.lower(): raise RuntimeError(erros.split("\n")[-1])
@@ -295,10 +302,10 @@ def extrair_anexo(token: str, msg: dict) -> dict | None:
     if len(conteudo) > LIMITE_ANEXO: raise ValueError(f"Anexo acima do limite de {LIMITE_ANEXO // 1024} KB.")
     return {"nome": ("imagem.jpg" if msg.get("photo") else item.get("file_name", "arquivo.bin"))[:120], "mimetype": (msg.get("document") or {}).get("mime_type", tipo), "anexo_b64": base64.b64encode(conteudo).decode("ascii")}
 
-def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex", chat_callback_id: int = 0) -> tuple[dict[str, object], str]:
+def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_aguardar=None, ao_iniciar=None, deve_abortar=None, nome_cron: str = "", modelo_nome: str = "", provedor_nome: str = "codex", chat_callback_id: int = 0, timeout_segundos: int = 0) -> tuple[dict[str, object], str]:
     """Monta prompt, chama provedor de IA e interpreta retorno."""
     try:
-        saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome)
+        saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, modelo_nome, provedor_nome, timeout_segundos)
         logar(f"raw_ia_ini={saida[:200].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
         logar(f"raw_ia_fim={saida[-200:].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
         return interpretar(saida), "ok"
@@ -308,7 +315,7 @@ def instanciar(chat_id: int, texto: str, refs: list[dict] | None = None, ao_agua
             logar(f"quota_gemini_fallback={novo}", chat_id if chat_id >= 0 else None)
             _override_modelo["bot"] = novo; _override_modelo["task"] = novo
             try:
-                saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, novo, provedor_nome)
+                saida = executar_ia(montar_prompt(chat_id, texto, refs, nome_cron, chat_callback_id), ao_aguardar, ao_iniciar, deve_abortar, novo, provedor_nome, timeout_segundos)
                 logar(f"raw_ia_ini={saida[:200].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None); logar(f"raw_ia_fim={saida[-200:].replace(chr(10),'|')}", chat_id if chat_id >= 0 else None)
                 return interpretar(saida), "ok"
             except Exception as erro: pass
@@ -350,7 +357,7 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
     atual = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
     if not atual or not int(atual["ativo"]): return logar("cron_ignorado_removido", sessao)
     banco("UPDATE crons SET ultima_execucao_em = ?, ultimo_status = 'executando', abortar = 0, pid_atual = -1 WHERE id = ?", (int(time.time()), cron_id)); registrar(sessao, "humano", str(cron["prompt"]).strip(), status="recebida")
-    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"), chat_callback_id=int(cron["chat_callback_id"]))
+    resp, status = instanciar(sessao, str(cron["prompt"]).strip(), ao_iniciar=lambda pid: marcar_pid_cron(cron_id, pid), deve_abortar=lambda: abortar_cron(cron_id), nome_cron=str(cron["nome"]), modelo_nome=modelo("task"), provedor_nome=provedor("task"), chat_callback_id=int(cron["chat_callback_id"]), timeout_segundos=3600)
     ax = resp.get("anexos", [None])[0] if isinstance(resp.get("anexos"), list) and resp.get("anexos") else None
     registrar(sessao, "agente", str(resp.get("texto", "")), ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "")
     final = banco("SELECT * FROM crons WHERE id = ?", (cron_id,), um=True)
