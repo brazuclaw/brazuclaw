@@ -23,6 +23,8 @@ PROVEDOR_PADRAO = "codex"
 PADRAO_TOKEN = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 PADRAO_ANEXO = re.compile(r'\[anexo([^\]]+)\]\s*(.*?)\s*\[/anexo\]', re.S)
 PADRAO_CRON = re.compile(r"\[cron([^\]]*)\]\s*(.*?)\s*\[/cron\]", re.S)
+PADRAO_TAREFA = re.compile(r"\[task\]\s*(.*?)\s*\[/task\]", re.S)
+MAX_BG_TAREFAS = 2
 
 def garantir_estrutura() -> None:
     """Cria a estrutura minima em ~/.brazuclaw e copia skills padrao se ausentes."""
@@ -76,6 +78,7 @@ def preparar_banco() -> None:
     banco("CREATE UNIQUE INDEX IF NOT EXISTS idx_update_ator ON mensagens(update_id, ator)")
     banco("CREATE INDEX IF NOT EXISTS idx_chat_msg ON mensagens(chat_id, id)")
     banco("CREATE TABLE IF NOT EXISTS crons (id INTEGER PRIMARY KEY, nome TEXT NOT NULL, prompt TEXT NOT NULL, schedule TEXT NOT NULL, ativo INTEGER NOT NULL DEFAULT 1, chat_callback_id INTEGER NOT NULL DEFAULT 0, callback_quando TEXT NOT NULL DEFAULT 'erro', timeout_segundos INTEGER NOT NULL DEFAULT 120, proximo_em INTEGER NOT NULL DEFAULT 0, ultima_execucao_em INTEGER NOT NULL DEFAULT 0, ultimo_status TEXT NOT NULL DEFAULT '', pid_atual INTEGER NOT NULL DEFAULT 0, abortar INTEGER NOT NULL DEFAULT 0, criado_em INTEGER NOT NULL)")
+    banco("CREATE TABLE IF NOT EXISTS tarefas (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pendente', resultado TEXT NOT NULL DEFAULT '', criado_em INTEGER NOT NULL, iniciado_em INTEGER NOT NULL DEFAULT 0, concluido_em INTEGER NOT NULL DEFAULT 0, pid_atual INTEGER NOT NULL DEFAULT 0, abortar INTEGER NOT NULL DEFAULT 0)")
 
 def estado(chave: str, valor: str | None = None) -> str:
     """Le ou grava estado simples."""
@@ -207,7 +210,7 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     return "\n\n".join(partes)
 
 def interpretar(texto: str) -> dict[str, object]:
-    """Separa texto, anexos e crons da resposta do provedor de IA."""
+    """Separa texto, anexos, crons e tarefas da resposta do provedor de IA."""
     crons = []
     for attrs, corpo in PADRAO_CRON.findall(texto):
         d = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
@@ -216,8 +219,10 @@ def interpretar(texto: str) -> dict[str, object]:
     for attrs, corpo in PADRAO_ANEXO.findall(texto):
         d = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
         if corpo.strip(): anexos.append({"nome": d.get("nome", "anexo.bin")[:120], "mimetype": d.get("mimetype", "application/octet-stream")[:120], "anexo_b64": "".join(corpo.split())})
-    logar(f"interpretar anexos={len(anexos)}")
-    return {"texto": PADRAO_CRON.sub("", PADRAO_ANEXO.sub("", texto)).strip(), "anexos": anexos, "crons": crons}
+    tasks = [corpo.strip() for corpo in PADRAO_TAREFA.findall(texto) if corpo.strip()]
+    logar(f"interpretar anexos={len(anexos)} tasks={len(tasks)}")
+    limpo = PADRAO_TAREFA.sub("", PADRAO_CRON.sub("", PADRAO_ANEXO.sub("", texto))).strip()
+    return {"texto": limpo, "anexos": anexos, "crons": crons, "tasks": tasks}
 
 def cron_campo(campo: str, minimo: int, maximo: int) -> tuple[set[int] | None, bool]:
     """Converte um campo cron em conjunto de inteiros."""
@@ -333,19 +338,30 @@ def processar_mensagem(token: str, update: dict) -> None:
     except Exception as erro: tg(token, "sendMessage", {"chat_id": chat_id, "text": str(erro) if isinstance(erro, ValueError) else f"Falha ao ler anexo: {erro}"}); return logar("erro_anexo", chat_id)
     if not texto and not anexo: tg(token, "sendMessage", {"chat_id": chat_id, "text": "Envie texto, imagem ou arquivo."}); return logar("ignorado_sem_conteudo", chat_id)
     registrar(chat_id, "humano", texto, anexo["anexo_b64"] if anexo else "", anexo["mimetype"] if anexo else "", anexo["nome"] if anexo else "", update_id, "recebida")
+    prefixo_bg = next((p for p in ("bg:", "segundo plano:") if texto.lower().startswith(p)), None)
+    if prefixo_bg and not anexo:
+        prompt_bg = texto[len(prefixo_bg):].strip()
+        if prompt_bg:
+            tid = banco("INSERT INTO tarefas (chat_id, prompt, criado_em) VALUES (?, ?, ?)", (chat_id, prompt_bg, int(time.time())))
+            tg(token, "sendMessage", {"chat_id": chat_id, "text": f"Tarefa #{int(tid)} enfileirada. Aviso quando concluir."})
+            registrar(chat_id, "agente", f"Tarefa #{int(tid)} enfileirada.", update_id=update_id); return logar("tarefa_enfileirada", chat_id)
     if local := cron_local(chat_id, texto):
         txt, ax = enviar(token, chat_id, local); registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); return logar("resposta_local_cron", chat_id)
     refs = [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo["nome"], "mimetype": anexo["mimetype"]}]
     inicio = time.monotonic(); logar(f"processando prov={provedor('bot')} model={modelo('bot') or 'padrao'} anexo={'sim' if anexo else 'nao'}", chat_id)
     resp, status = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"), provedor_nome=provedor("bot"))
     if status == "erro": logar(f"erro_resposta={resp.get('texto', '')[:200]}", chat_id)
-    txt, ax = enviar(token, chat_id, aplicar_crons(chat_id, resp))
+    txt, ax = enviar(token, chat_id, aplicar_tarefas(chat_id, aplicar_crons(chat_id, resp)))
     logar(f"resposta_enviada tempo={int(time.monotonic()-inicio)}s", chat_id)
     registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id)
 
 def abortar_cron(cron_id: int) -> bool:
     """Retorna True quando o cron precisa abortar."""
     c = banco("SELECT ativo, abortar FROM crons WHERE id = ?", (cron_id,), um=True); return not c or bool(c["abortar"])
+
+def abortar_tarefa(tid: int) -> bool:
+    """Retorna True quando a tarefa em segundo plano precisa abortar."""
+    r = banco("SELECT abortar FROM tarefas WHERE id = ?", (tid,), um=True); return not r or bool(r["abortar"])
 
 def marcar_pid_cron(cron_id: int, pid: int) -> None:
     """Atualiza o PID atual do cron."""
@@ -366,6 +382,28 @@ def executar_cron(cron: sqlite3.Row, token: str) -> None:
         if token and int(final["chat_callback_id"]) and (final["callback_quando"] == "sempre" or (final["callback_quando"] == "erro" and status != "ok")):
             enviar(token, int(final["chat_callback_id"]), {"texto": str(resp.get("texto", "")) if status == "ok" else f'Cron #{cron_id} "{final["nome"]}" {status}.\n\n{resp.get("texto", "")}'.strip(), "anexos": resp.get("anexos", []) if status == "ok" else []})
     logar(f"cron_{status}", sessao)
+
+def executar_tarefa(tarefa: sqlite3.Row, token: str) -> None:
+    """Executa uma tarefa de segundo plano e notifica o usuario ao concluir."""
+    tid, chat_id = int(tarefa["id"]), int(tarefa["chat_id"])
+    banco("UPDATE tarefas SET status = 'executando', iniciado_em = ? WHERE id = ?", (int(time.time()), tid))
+    resp, status = instanciar(chat_id, str(tarefa["prompt"]).strip(), ao_iniciar=lambda pid: banco("UPDATE tarefas SET pid_atual = ? WHERE id = ?", (pid, tid)), deve_abortar=lambda: abortar_tarefa(tid), modelo_nome=modelo("task"), provedor_nome=provedor("task"))
+    resultado = str(resp.get("texto", ""))
+    banco("UPDATE tarefas SET status = ?, resultado = ?, concluido_em = ?, pid_atual = 0 WHERE id = ?", (status, resultado[:2000], int(time.time()), tid))
+    if token and chat_id:
+        aviso = f"Tarefa #{tid} " + ("concluida." if status == "ok" else "falhou.")
+        resp["texto"] = "\n\n".join(p for p in (aviso, resultado) if p).strip()
+        enviar(token, chat_id, resp)
+    logar(f"tarefa_{status} id={tid}", chat_id)
+
+def aplicar_tarefas(chat_id: int, resposta: dict[str, object]) -> dict[str, object]:
+    """Enfileira tarefas de segundo plano geradas pelo agente."""
+    avisos = []
+    for prompt in resposta.get("tasks", []) if isinstance(resposta.get("tasks"), list) else []:
+        tid = banco("INSERT INTO tarefas (chat_id, prompt, criado_em) VALUES (?, ?, ?)", (chat_id, str(prompt).strip(), int(time.time())))
+        avisos.append(f"Tarefa #{int(tid)} enfileirada. Aviso quando concluir.")
+    resposta["tasks"] = []; texto = str(resposta.get("texto", "")).strip()
+    resposta["texto"] = "\n\n".join(p for p in (texto, "\n".join(avisos)) if p).strip(); return resposta
 
 def daemonizar() -> None:
     """Desacopla o processo atual do terminal."""
@@ -390,12 +428,17 @@ async def rodar_bot() -> int:
     banco("UPDATE crons SET pid_atual = 0, abortar = 0")
     for c in banco("SELECT id, schedule, ativo FROM crons", varios=True): banco("UPDATE crons SET proximo_em = ? WHERE id = ?", (cron_proximo(str(c["schedule"]), int(time.time()) - 60) if int(c["ativo"]) else 0, c["id"]))
     offset = int(estado("telegram_offset") or "0") or None; logar("bot_iniciado")
-    tarefas: set[asyncio.Task] = set()
+    banco("UPDATE tarefas SET status = 'pendente', pid_atual = 0 WHERE status = 'executando'")
+    threads_ativas: set[asyncio.Task] = set()
     try:
         while not parar.is_set():
             try:
                 if cron := banco("SELECT * FROM crons WHERE ativo = 1 AND pid_atual = 0 AND proximo_em > 0 AND proximo_em <= ? ORDER BY proximo_em, id LIMIT 1", (int(time.time()),), um=True):
-                    t = asyncio.create_task(asyncio.to_thread(executar_cron, cron, token)); tarefas.add(t); t.add_done_callback(tarefas.discard)
+                    t = asyncio.create_task(asyncio.to_thread(executar_cron, cron, token)); threads_ativas.add(t); t.add_done_callback(threads_ativas.discard)
+                em_exec = banco("SELECT COUNT(*) FROM tarefas WHERE status = 'executando'", um=True)[0]
+                if em_exec < MAX_BG_TAREFAS:
+                    if pendente := banco("SELECT * FROM tarefas WHERE status = 'pendente' ORDER BY id LIMIT 1", um=True):
+                        t = asyncio.create_task(asyncio.to_thread(executar_tarefa, pendente, token)); threads_ativas.add(t); t.add_done_callback(threads_ativas.discard)
                 for update in await asyncio.to_thread(tg, token, "getUpdates", {"timeout": 30, "allowed_updates": ["message"], **({"offset": offset} if offset else {})}, 40):
                     offset = update["update_id"] + 1
                     if update.get("message") and not banco("SELECT 1 FROM mensagens WHERE update_id = ? AND ator = 'agente' AND status = 'respondida' LIMIT 1", (update["update_id"],), um=True):
@@ -403,7 +446,7 @@ async def rodar_bot() -> int:
                     estado("telegram_offset", str(offset))
             except Exception as erro: logar(f"erro_polling={erro}"); await asyncio.sleep(2)
     finally:
-        if tarefas: await asyncio.gather(*tarefas, return_exceptions=True)
+        if threads_ativas: await asyncio.gather(*threads_ativas, return_exceptions=True)
         ARQ["pid"].unlink(missing_ok=True); logar("bot_encerrado")
     return 0
 
@@ -577,6 +620,21 @@ def parsear_flags(args: list[str]) -> tuple[list[str], dict[str, str]]:
         else: livres.append(args[i]); i += 1
     return livres, flags
 
+def cli_task(args: list[str]) -> int:
+    """Gerencia a fila de tarefas em segundo plano."""
+    if not args or args[0] == "list":
+        for t in banco("SELECT * FROM tarefas ORDER BY id DESC", varios=True):
+            ts = datetime.fromtimestamp(t["criado_em"]).strftime("%Y-%m-%d %H:%M")
+            print(f'#{t["id"]} {t["status"]} chat=...{str(t["chat_id"])[-4:]} criado={ts} prompt={str(t["prompt"])[:60]}')
+        return 0
+    if len(args) < 2 or not args[1].isdigit(): raise SystemExit("Uso: brazuclaw task [list|abort ID|result ID|rm ID]")
+    tarefa = banco("SELECT * FROM tarefas WHERE id = ?", (int(args[1]),), um=True)
+    if not tarefa: raise SystemExit("Tarefa nao encontrada.")
+    if args[0] == "abort": banco("UPDATE tarefas SET abortar = 1 WHERE id = ?", (tarefa["id"],)); print(f'Aborto solicitado para tarefa #{tarefa["id"]}.'); return 0
+    if args[0] == "result": print(str(tarefa["resultado"]) or "(sem resultado ainda)"); return 0
+    if args[0] == "rm": banco("DELETE FROM tarefas WHERE id = ?", (tarefa["id"],)); print(f"Tarefa #{tarefa['id']} removida."); return 0
+    raise SystemExit("Uso: brazuclaw task [list|abort ID|result ID|rm ID]")
+
 def cli() -> int:
     """Despacha a CLI principal."""
     preparar_banco(); args = sys.argv[1:]
@@ -585,8 +643,9 @@ def cli() -> int:
     if args[0] == "stop": return parar()
     if args[0] == "restart": return iniciar() if parar() == 0 else 1
     if args[0] == "logs": return logs(args[1:])
-    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|model|provider|tg]"); return 0
+    if args[0] in ("help", "--help", "-h"): print("Uso: brazuclaw [setup|start|stop|restart|logs|cron|task|model|provider|tg]"); return 0
     if args[0] == "tg": return cli_tg(args[1:])
+    if args[0] == "task": return cli_task(args[1:])
     if args[0] == "provider":
         if len(args) < 2 or args[1] not in ("bot", "task"): print(f"Uso: brazuclaw provider bot [provedor] | brazuclaw provider task [provedor]\nAtual: bot={provedor('bot')} task={provedor('task')}"); return 0
         tipo, chave = args[1], "BRAZUCLAW_PROVIDER_BOT" if args[1] == "bot" else "BRAZUCLAW_PROVIDER_TASK"

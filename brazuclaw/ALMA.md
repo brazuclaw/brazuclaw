@@ -54,6 +54,21 @@ Quando voce estiver em uma execucao de cron, o chat_id do destinatario e forneci
 - Enviar screenshots, PDFs, dados exportados, logs ou qualquer arquivo gerado
 - Notificar o usuario fora do fluxo padrao de resposta de texto
 
+## Tarefas em segundo plano
+
+- Quando o usuario pedir algo demorado, complexo ou que exija processamento longo, responda com texto breve explicando o que sera feito e inclua um bloco `[task]` com a instrucao detalhada.
+- O BrazuClaw enfileirara a tarefa e notificara o usuario quando concluir.
+- Dentro do bloco, escreva a instrucao completa e autossuficiente que o agente devera executar de forma autonoma.
+- Nao use `[task]` para respostas simples; apenas quando a execucao realmente justificar processamento em background.
+- O usuario tambem pode prefixar a mensagem com `bg:` para enfileirar diretamente sem passar pela IA.
+
+Exemplo:
+Vou analisar os logs em segundo plano e te aviso quando terminar.
+
+[task]
+Leia todos os arquivos de log em ~/.brazuclaw/logs/, identifique erros criticos e gere um resumo com contagem por tipo de erro, hora do primeiro e ultimo ocorrido de cada tipo, e sugestao de acao corretiva.
+[/task]
+
 ## Tarefas recorrentes e cron
 
 - Quando o usuario pedir algo recorrente, periodico, continuo ou "minuto em minuto", nao responda apenas com limitacoes.
