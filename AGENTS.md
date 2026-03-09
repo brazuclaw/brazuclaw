@@ -27,8 +27,8 @@
 - `~/.brazuclaw/skills/` — skills disponíveis para o agente; copiadas do pacote na primeira execução sem sobrescrever customizações do usuário
 - `~/.brazuclaw/logs/brazuclaw.log` — arquivo de log do daemon
 - `~/.brazuclaw/db/mensagens.db` — SQLite com histórico, anexos e estado do bot
+- `~/.brazuclaw/chrome-profile/` — perfil dedicado do Chrome para navegação via CDP (separado do Chrome pessoal do usuário)
 - `~/.brazuclaw/brazuclaw.pid` — PID do processo em background quando o daemon está ativo
-- `~/.brazuclaw/chrome-profile/` — perfil persistente do Chrome (usado pela skill chrome-cdp-playwright)
 - O bot e o wizard leem variáveis primeiro de `~/.brazuclaw/config.env`, depois do ambiente do sistema; ambiente do sistema tem prioridade
 - Nenhum outro diretório ou arquivo fora de `~/.brazuclaw/` deve ser criado ou modificado pelo BrazuClaw
 - logs ficam em `~/.brazuclaw/logs/`
@@ -138,7 +138,7 @@
 - Para criar uma nova skill, seguir o guia em `~/.brazuclaw/skills/how-to-make-new-skills/skill.md` e atualizar `skill-list.md`
 - Skills incluídas no pacote:
   - `how-to-make-new-skills` — guia para criar novas skills
-  - `chrome-cdp-playwright` — automação de browser via Playwright e CDP, modo headless por padrão, perfil persistente em `~/.brazuclaw/chrome-profile/`
+  - `chrome-desktop` — controle do Chrome real do desktop via CDP, usando logins e sessoes reais do usuario
 
 ## Personalidade
 - Arquivo `~/.brazuclaw/ALMA.md`; lido sob demanda e criado a partir do padrão do pacote quando ausente
@@ -153,7 +153,7 @@
 - `brazuclaw/ALMA.md` — personalidade padrão incluída no pacote
 - `brazuclaw/skills/skill-list.md` — catálogo de skills padrão
 - `brazuclaw/skills/how-to-make-new-skills/skill.md` — guia para criar skills
-- `brazuclaw/skills/chrome-cdp-playwright/skill.md` — skill de automação de browser
+- `brazuclaw/skills/chrome-desktop/skill.md` — skill de controle do Chrome real via CDP
 - `CLAUDE.md` — fonte de verdade do projeto
 
 ## Código

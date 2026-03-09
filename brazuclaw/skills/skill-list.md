@@ -5,4 +5,4 @@ Este arquivo contém o resumo de todas as skills disponíveis no BrazuClaw. Cons
 ## Skills Disponíveis
 
 - **how-to-make-new-skills**: Instruções e boas práticas sobre como criar novas skills compatíveis com múltiplos provedores de IA. Ensina a estrutura de diretório exigida e os padrões recomendados para a criação de documentações (`skill.md`) e ferramentas auxiliares.
-- **chrome-cdp-playwright**: Controla o Google Chrome via CDP e Playwright. Por padrão utiliza modo headless (invisível), mas suporta execução não-headless. Salva o perfil e estados de sessão do navegador em `~/.brazuclaw/chrome-profile/`.
+- **chrome-desktop**: Controla o Chrome real do desktop do usuario via CDP (Chrome DevTools Protocol), usando os logins, extensoes e cookies reais. Browser visivel por padrao. Suporta conexao via Playwright (`connect_over_cdp`) ou CDP raw via websocket.
