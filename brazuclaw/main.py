@@ -1,6 +1,6 @@
 """CLI, wizard, bot Telegram e cron do BrazuClaw."""
 from __future__ import annotations
-import asyncio, base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time
+import asyncio, base64, json, mimetypes, os, platform, re, shutil, signal, sqlite3, subprocess, sys, time, threading
 from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
@@ -64,12 +64,22 @@ def logar(status: str, chat_id: int | None = None) -> None:
     """Escreve log simples sem dados sensiveis."""
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {'chat=----' if chat_id is None else f'chat=...{str(chat_id)[-4:]}'} {status}", flush=True)
 
+_tlocal = threading.local()
+
 def banco(sql: str, args: tuple = (), um: bool = False, varios: bool = False):
-    """Executa SQL simples no banco local."""
-    garantir_estrutura()
-    with sqlite3.connect(ARQ["db"]) as con:
-        con.execute("PRAGMA journal_mode=WAL"); con.row_factory = sqlite3.Row; cur = con.execute(sql, args)
+    """Executa SQL simples no banco local com conexao reutilizada por thread."""
+    con = getattr(_tlocal, "con", None)
+    if con is None:
+        garantir_estrutura()
+        con = sqlite3.connect(ARQ["db"], isolation_level=None, check_same_thread=False)
+        con.execute("PRAGMA journal_mode=WAL"); con.row_factory = sqlite3.Row; _tlocal.con = con
+    try:
+        cur = con.execute(sql, args)
         return cur.fetchone() if um else cur.fetchall() if varios else cur.lastrowid
+    except sqlite3.OperationalError:
+        try: con.close()
+        except Exception: pass
+        _tlocal.con = None; return banco(sql, args, um, varios)
 
 def preparar_banco() -> None:
     """Cria as tabelas do projeto."""
@@ -357,11 +367,13 @@ def processar_mensagem(token: str, update: dict) -> None:
     if local := cron_local(chat_id, texto):
         txt, ax = enviar(token, chat_id, local); registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id); return logar("resposta_local_cron", chat_id)
     refs = [] if not anexo else [{"chat_id": chat_id, "update_id": update_id, "nome": anexo["nome"], "mimetype": anexo["mimetype"]}]
+    idade_msg = int(time.time()) - int(msg.get("date", time.time()))
+    if idade_msg > 180: logar(f"msg_atrasada={idade_msg}s", chat_id); tg(token, "sendMessage", {"chat_id": chat_id, "text": f"Desculpe pela demora ({idade_msg // 60}min). Processando agora..."}, 10)
     inicio = time.monotonic(); logar(f"processando prov={provedor('bot')} model={modelo('bot') or 'padrao'} anexo={'sim' if anexo else 'nao'}", chat_id)
     resp, status = instanciar(chat_id, texto, refs, ao_aguardar=lambda: tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, 10), modelo_nome=modelo("bot"), provedor_nome=provedor("bot"))
     if status == "erro": logar(f"erro_resposta={resp.get('texto', '')[:200]}", chat_id)
     txt, ax = enviar(token, chat_id, aplicar_tarefas(chat_id, aplicar_crons(chat_id, resp)))
-    logar(f"resposta_enviada tempo={int(time.monotonic()-inicio)}s", chat_id)
+    tempo_real = int(time.monotonic()-inicio); logar(f"resposta_enviada tempo={tempo_real}s idade_msg={idade_msg}s", chat_id)
     registrar(chat_id, "agente", txt, ax["anexo_b64"] if ax else "", ax["mimetype"] if ax else "", ax["nome"] if ax else "", update_id)
 
 def abortar_cron(cron_id: int) -> bool:

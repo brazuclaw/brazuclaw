@@ -155,6 +155,7 @@
 - `brazuclaw/skills/how-to-make-new-skills/skill.md` — guia para criar skills
 - `brazuclaw/skills/chrome-desktop/skill.md` — skill de controle do Chrome real via CDP
 - `CLAUDE.md` — fonte de verdade do projeto
+- `scripts/mac-nosleep.sh` — daemon launchd para impedir Maintenance Sleep em Macs (requer sudo)
 
 ## Código
 - Total de todos os `.py` somados: máximo 1000 linhas
