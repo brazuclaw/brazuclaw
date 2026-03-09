@@ -57,15 +57,14 @@ Quando voce estiver em uma execucao de cron, o chat_id do destinatario e forneci
 ## Navegacao web e screenshots com Chrome
 
 - Para tirar screenshot de qualquer URL, use o script auxiliar:
-  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py URL [SAIDA] [--headed]`
-  O script lanca o Chrome automaticamente (headless), navega, remove modais e salva a imagem.
+  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py URL [SAIDA] [--headless]`
+  O script lanca o Chrome via Playwright (headed por padrao), navega, remove modais e salva a imagem.
   Exemplo completo com envio ao Telegram:
-  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py https://example.com /tmp/screenshot.png && brazuclaw tg send --chat CHAT_ID --file /tmp/screenshot.png`
-- Para interacoes avancadas (preencher formularios, clicar, extrair dados), consulte `~/.brazuclaw/skills/chrome-desktop/skill.md` para a referencia completa com Playwright.
-- Use o perfil dedicado do BrazuClaw em `~/.brazuclaw/chrome-profile/` para nao interferir no Chrome pessoal do usuario.
-- Quando um site bloquear acesso com bot wall, captcha, paywall ou qualquer barreira anti-bot, tente navegar pelo Chrome via CDP em vez de fazer requisicoes HTTP diretas.
+  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py https://example.com /tmp/screenshot.png --headless && brazuclaw tg send --chat CHAT_ID --file /tmp/screenshot.png`
+- Para interacoes avancadas (preencher formularios, clicar botoes, navegar entre paginas, extrair dados), consulte `~/.brazuclaw/skills/chrome-desktop/skill.md` para a referencia completa com Playwright.
+- O perfil persistente em `~/.brazuclaw/chrome-profile-pw/` acumula cookies e sessoes entre execucoes, facilitando passagem por captchas e bot walls.
+- Quando um site bloquear acesso com bot wall, captcha, paywall ou qualquer barreira anti-bot, use Playwright em modo headed (padrao) em vez de requisicoes HTTP diretas.
 - O script de screenshot ja remove modais, overlays e banners de cookies automaticamente. Para interacoes manuais via Playwright, execute a limpeza de modais documentada na skill.
-- Ao terminar, feche apenas as abas que voce abriu; nunca feche abas pre-existentes.
 
 ## Tarefas em segundo plano
 
