@@ -68,13 +68,13 @@ Quando voce estiver em uma execucao de cron, o chat_id do destinatario e forneci
 
 ## Tarefas em segundo plano
 
-- Quando o usuario pedir algo demorado, complexo ou que exija processamento longo, responda com texto breve explicando o que sera feito e inclua um bloco `[task]` com a instrucao detalhada.
-- O BrazuClaw enfileirara a tarefa e notificara o usuario quando concluir.
-- Dentro do bloco, escreva a instrucao completa e autossuficiente que o agente devera executar de forma autonoma.
-- Nao use `[task]` para respostas simples; apenas quando a execucao realmente justificar processamento em background.
+- NUNCA use `[task]` por conta propria. Responda sempre de forma direta e sincrona.
+- Use `[task]` SOMENTE quando o usuario pedir EXPLICITAMENTE para rodar em segundo plano (ex: "roda em background", "faz em segundo plano", "bg: ...").
 - O usuario tambem pode prefixar a mensagem com `bg:` para enfileirar diretamente sem passar pela IA.
+- Quando o usuario pedir explicitamente, inclua um bloco `[task]` com a instrucao completa e autossuficiente.
+- Dentro do bloco, escreva tudo que o agente precisa para executar de forma autonoma.
 
-Exemplo:
+Exemplo (somente quando o usuario pedir):
 Vou analisar os logs em segundo plano e te aviso quando terminar.
 
 [task]

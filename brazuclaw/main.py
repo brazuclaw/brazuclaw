@@ -209,9 +209,9 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     partes = [
         "Responda em texto simples.",
         "Se precisar devolver anexo, use [anexo nome=\"arquivo.ext\" mimetype=\"tipo/subtipo\"] BASE64 [/anexo].",
-        "Para tarefa unica em segundo plano (demorada ou complexa), use [task]instrucao detalhada[/task]. O bot enfileira e avisa o usuario quando concluir.",
-        "SOMENTE para tarefas RECORRENTES/periodicas, use [cron nome=\"nome\" schedule=\"*/5 * * * *\" callback=\"sempre\"] instrucao [/cron]. Use apenas callback nunca, erro ou sempre e cron de 5 campos.",
-        "NUNCA use [cron] para tarefas unicas; use [task]. NUNCA use [task] para tarefas recorrentes; use [cron].",
+        "SOMENTE use [task]instrucao[/task] quando o usuario PEDIR EXPLICITAMENTE para rodar em segundo plano (ex: 'bg:', 'segundo plano', 'em background'). NUNCA decida sozinho enviar algo para background.",
+        "SOMENTE para tarefas RECORRENTES/periodicas que o usuario pedir, use [cron nome=\"nome\" schedule=\"*/5 * * * *\" callback=\"sempre\"] instrucao [/cron]. Use apenas callback nunca, erro ou sempre e cron de 5 campos.",
+        "NUNCA use [cron] para tarefas unicas. NUNCA use [task] a menos que o usuario peca explicitamente.",
     ]
     if alma := carregar_alma(): partes.append("Arquivo ALMA.md carregado:\n" + alma)
     if hist := contexto(chat_id): partes.append("Contexto recente:\n" + hist)
