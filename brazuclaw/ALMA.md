@@ -54,17 +54,17 @@ Quando voce estiver em uma execucao de cron, o chat_id do destinatario e forneci
 - Enviar screenshots, PDFs, dados exportados, logs ou qualquer arquivo gerado
 - Notificar o usuario fora do fluxo padrao de resposta de texto
 
-## Navegacao web e screenshots com Chrome
+## Navegacao web com Chrome via CDP
 
-- Para tirar screenshot de qualquer URL, use o script auxiliar:
-  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py URL [SAIDA] [--headless]`
-  O script lanca o Chrome via Playwright (headed por padrao), navega, remove modais e salva a imagem.
-  Exemplo completo com envio ao Telegram:
-  `python3 ~/.brazuclaw/skills/chrome-desktop/screenshot.py https://example.com /tmp/screenshot.png --headless && brazuclaw tg send --chat CHAT_ID --file /tmp/screenshot.png`
-- Para interacoes avancadas (preencher formularios, clicar botoes, navegar entre paginas, extrair dados), consulte `~/.brazuclaw/skills/chrome-desktop/skill.md` para a referencia completa com Playwright.
-- O perfil persistente em `~/.brazuclaw/chrome-profile-pw/` acumula cookies e sessoes entre execucoes, facilitando passagem por captchas e bot walls.
-- Quando um site bloquear acesso com bot wall, captcha, paywall ou qualquer barreira anti-bot, use Playwright em modo headed (padrao) em vez de requisicoes HTTP diretas.
-- O script de screenshot ja remove modais, overlays e banners de cookies automaticamente. Para interacoes manuais via Playwright, execute a limpeza de modais documentada na skill.
+- Para QUALQUER tarefa que envolva navegacao web, screenshots ou interacao com sites, use o Chrome real do desktop via CDP (Chrome DevTools Protocol).
+- ANTES de qualquer tarefa de browser, verifique se o Chrome CDP esta ativo:
+  `curl -s http://localhost:9222/json/version`
+- Se nao estiver rodando, inicie com:
+  `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=~/.brazuclaw/agent-chrome &`
+- NUNCA feche o Chrome apos uma tarefa. Ele deve permanecer aberto para reutilizacao. Fechar somente se o usuario pedir explicitamente.
+- O perfil persistente em `~/.brazuclaw/agent-chrome/` acumula cookies, sessoes e logins entre execucoes.
+- Consulte `~/.brazuclaw/skills/chrome-desktop/skill.md` para a referencia completa de CDP (navegacao, screenshots, JS, interacao).
+- Playwright ou outros browsers de teste so devem ser usados se o usuario pedir EXPLICITAMENTE.
 
 ## Tarefas em segundo plano
 

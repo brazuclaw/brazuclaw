@@ -27,7 +27,8 @@
 - `~/.brazuclaw/skills/` — skills disponíveis para o agente; copiadas do pacote na primeira execução sem sobrescrever customizações do usuário
 - `~/.brazuclaw/logs/brazuclaw.log` — arquivo de log do daemon
 - `~/.brazuclaw/db/mensagens.db` — SQLite com histórico, anexos e estado do bot
-- `~/.brazuclaw/chrome-profile-pw/` — perfil persistente do Playwright/Chromium para navegação (separado do Chrome pessoal do usuário)
+- `~/.brazuclaw/agent-chrome/` — perfil persistente do Chrome real via CDP para navegação (separado do Chrome pessoal do usuário)
+- `~/.brazuclaw/chrome-profile-pw/` — perfil legado do Playwright (usado apenas se o usuário pedir Playwright explicitamente)
 - `~/.brazuclaw/brazuclaw.pid` — PID do processo em background quando o daemon está ativo
 - O bot e o wizard leem variáveis primeiro de `~/.brazuclaw/config.env`, depois do ambiente do sistema; ambiente do sistema tem prioridade
 - Nenhum outro diretório ou arquivo fora de `~/.brazuclaw/` deve ser criado ou modificado pelo BrazuClaw
