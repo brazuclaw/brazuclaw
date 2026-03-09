@@ -198,8 +198,9 @@ def montar_prompt(chat_id: int, texto: str, refs: list[dict] | None = None, nome
     partes = [
         "Responda em texto simples.",
         "Se precisar devolver anexo, use [anexo nome=\"arquivo.ext\" mimetype=\"tipo/subtipo\"] BASE64 [/anexo].",
-        "Se o usuario pedir tarefa recorrente, use [cron nome=\"nome\" schedule=\"*/5 * * * *\" callback=\"sempre\"] instrucao [/cron].",
-        "Use apenas callback nunca, erro ou sempre e cron de 5 campos.",
+        "Para tarefa unica em segundo plano (demorada ou complexa), use [task]instrucao detalhada[/task]. O bot enfileira e avisa o usuario quando concluir.",
+        "SOMENTE para tarefas RECORRENTES/periodicas, use [cron nome=\"nome\" schedule=\"*/5 * * * *\" callback=\"sempre\"] instrucao [/cron]. Use apenas callback nunca, erro ou sempre e cron de 5 campos.",
+        "NUNCA use [cron] para tarefas unicas; use [task]. NUNCA use [task] para tarefas recorrentes; use [cron].",
     ]
     if alma := carregar_alma(): partes.append("Arquivo ALMA.md carregado:\n" + alma)
     if hist := contexto(chat_id): partes.append("Contexto recente:\n" + hist)
@@ -294,9 +295,16 @@ def cron_local(chat_id: int, texto: str) -> dict[str, object] | None:
         itens = [f'{i}. nome: {c["nome"]}\nschedule: {c["schedule"]}\ncallback: {c["callback_quando"]}\ninstrucao: {c["prompt"]}' for i, c in enumerate(crons, 1)]
         return {"texto": "Jobs em agenda no momento:\n\n" + "\n\n".join(itens), "anexos": []}
     if any(p in texto for p in ("remova", "remove", "apague", "delete", "cancele", "cancel", "exclua")):
-        alvos = crons[:1] if any(p in texto for p in ("antig", "older", "mais velho")) else crons
-        for c in alvos: banco("DELETE FROM crons WHERE id = ?", (c["id"],))
-        return {"texto": "Cron mais antigo removido." if alvos and len(alvos) == 1 and len(crons) > 1 else ("Todos os jobs agendados foram removidos." if alvos else "No momento, nao ha nenhum agendamento ativo."), "anexos": []}
+        if not crons: return {"texto": "No momento, nao ha nenhum agendamento ativo.", "anexos": []}
+        por_nome = [c for c in crons if c["nome"].lower() in texto]
+        if por_nome:
+            for c in por_nome: banco("DELETE FROM crons WHERE id = ?", (c["id"],))
+            nomes = ", ".join(f'"{c["nome"]}"' for c in por_nome)
+            return {"texto": f"Cron {nomes} removido.", "anexos": []}
+        if any(p in texto for p in ("todos", "tudo", "all")):
+            for c in crons: banco("DELETE FROM crons WHERE id = ?", (c["id"],))
+            return {"texto": "Todos os jobs agendados foram removidos.", "anexos": []}
+        return None  # nome nao identificado; delega ao agente de IA
     return None
 
 def extrair_anexo(token: str, msg: dict) -> dict | None:
