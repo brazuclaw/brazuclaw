@@ -1,0 +1,3 @@
+[submodule "chrome-desktop"]
+	path = chrome-desktop
+	url = git@mtgithub.com:tourniercorporation/chrome-desktop-skill.git
