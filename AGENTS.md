@@ -1,5 +1,8 @@
 # AGENTS.md — BrazuClaw
 
+# TODO:
+**Migrar o código da pasta chrome-desktop/ para a skill de browser use do brazuclaw. Torne esta skill parte da CLI para que esteja acoplada de modo ultra coeso na API, nos prompts de sistema e na ALMA do agente - deste modo ele usará o Browser de modo mais natural e flexível, permitindo a realização de tarefas complexas.**
+
 ## Geral
 - O projeto BrazuClaw é um chatbot Telegram que repassa mensagens do usuário a provedores de IA (Codex, Claude, Gemini) e devolve a resposta
 - Linguagem: Python 3.11+, código-fonte 100% em português (variáveis, comentários, docstrings)
